@@ -1,0 +1,86 @@
+[project]
+name = "agentflow"
+version = "0.2.0"
+description = "企业级多Agent协作平台"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.11"
+authors = [
+    {name = "AgentFlow Team"},
+]
+
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "pydantic>=2.9.0",
+    "pydantic-settings>=2.6.0",
+    "structlog>=24.0.0",
+    "python-dotenv>=1.0.0",
+    "httpx>=0.28.0",
+    "typer>=0.13.0",
+    "rich>=13.0.0",
+    "pyyaml>=6.0.0",
+    "jinja2>=3.1.0",
+    "python-multipart>=0.0.18",
+]
+
+[project.optional-dependencies]
+llm = [
+    "openai>=1.0.0",
+    "anthropic>=0.40.0",
+]
+ui = [
+    "streamlit>=1.40.0",
+]
+vector = [
+    "chromadb>=0.5.0",
+]
+redis = [
+    "redis>=5.0.0",
+]
+full = [
+    "agentflow[llm,ui,vector,redis]",
+]
+otel = [
+    "opentelemetry-api>=1.20.0",
+    "opentelemetry-sdk>=1.20.0",
+    "opentelemetry-exporter-otlp>=1.20.0",
+]
+dev = [
+    "agentflow[full,otel]",
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+    "pytest-cov>=6.0.0",
+    "pytest-mock>=3.14.0",
+    "httpx>=0.28.0",
+    "plotly>=5.0.0",
+    "pandas>=2.0.0",
+    "ruff>=0.8.0",
+    "mypy>=1.13.0",
+    "pre-commit>=4.0.0",
+]
+
+[project.scripts]
+agentflow = "agentflow.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agentflow"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP", "B", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
