@@ -425,6 +425,127 @@ class APICallTool(Tool):
             return f"API调用错误: {e}"
 
 
+class DocumentRetrievalTool(Tool):
+    """文档检索工具 - 简易RAG"""
+    name = "document_retrieval"
+    description = "从已加载的文档中检索相关内容。用于回答用户关于文档的问题。"
+    parameters = {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "检索关键词或问题"},
+            "top_k": {"type": "integer", "description": "返回最相关的片段数量", "default": 3},
+        },
+        "required": ["query"],
+    }
+
+    def __init__(self) -> None:
+        self._documents: list[dict[str, str]] = []  # {"content": ..., "source": ..., "chunk_id": ...}
+
+    def load_file(self, file_path: str) -> int:
+        """加载文件并分块"""
+        try:
+            path = Path(file_path)
+            if not path.exists():
+                return 0
+            content = path.read_text(encoding="utf-8")
+            chunks = self._split_text(content, max_len=500, overlap=50)
+            for i, chunk in enumerate(chunks):
+                self._documents.append({
+                    "content": chunk,
+                    "source": str(path.name),
+                    "chunk_id": f"{path.name}:{i}",
+                })
+            return len(chunks)
+        except Exception:
+            return 0
+
+    def load_text(self, text: str, source: str = "user_input") -> int:
+        """加载文本并分块"""
+        chunks = self._split_text(text, max_len=500, overlap=50)
+        for i, chunk in enumerate(chunks):
+            self._documents.append({
+                "content": chunk,
+                "source": source,
+                "chunk_id": f"{source}:{i}",
+            })
+        return len(chunks)
+
+    def _split_text(self, text: str, max_len: int = 500, overlap: int = 50) -> list[str]:
+        """按段落和长度分块"""
+        paragraphs = text.split("\n\n")
+        chunks: list[str] = []
+        current = ""
+        for para in paragraphs:
+            para = para.strip()
+            if not para:
+                continue
+            if len(current) + len(para) > max_len and current:
+                chunks.append(current.strip())
+                # overlap: 保留最后一段作为上下文
+                current = current[-overlap:] + "\n\n" + para if overlap else para
+            else:
+                current = current + "\n\n" + para if current else para
+        if current.strip():
+            chunks.append(current.strip())
+        return chunks if chunks else [text[:max_len]]
+
+    def _score(self, query: str, text: str) -> float:
+        """TF-IDF + 余弦相似度评分"""
+        try:
+            import numpy as np
+            # 构建词汇表
+            query_words = query.lower().split()
+            text_words = text.lower().split()
+            all_words = list(set(query_words + text_words))
+            word2idx = {w: i for i, w in enumerate(all_words)}
+
+            # TF-IDF 向量
+            def tfidf(words):
+                vec = np.zeros(len(all_words))
+                for w in words:
+                    if w in word2idx:
+                        vec[word2idx[w]] += 1
+                # TF 归一化
+                if len(words) > 0:
+                    vec = vec / len(words)
+                return vec
+
+            q_vec = tfidf(query_words)
+            t_vec = tfidf(text_words)
+
+            # 余弦相似度
+            norm_q = np.linalg.norm(q_vec)
+            norm_t = np.linalg.norm(t_vec)
+            if norm_q == 0 or norm_t == 0:
+                return 0.0
+            return float(np.dot(q_vec, t_vec) / (norm_q * norm_t))
+        except ImportError:
+            # fallback: 关键词匹配
+            query_words = set(query.lower().split())
+            text_lower = text.lower()
+            hits = sum(1 for w in query_words if w in text_lower)
+            return hits / max(len(query_words), 1)
+
+    async def execute(self, query: str = "", top_k: int = 3, **kwargs: Any) -> str:
+        if not self._documents:
+            return "没有已加载的文档。请先使用 file_reader 读取文件，或直接将文档内容粘贴给 Agent。"
+
+        scored = [(self._score(query, doc["content"]), doc) for doc in self._documents]
+        scored.sort(key=lambda x: x[0], reverse=True)
+
+        results = []
+        for score, doc in scored[:top_k]:
+            if score > 0:
+                results.append(f"[来源: {doc['chunk_id']} | 相关度: {score:.0%}]\n{doc['content']}")
+
+        if not results:
+            return "未找到与查询相关的文档片段。"
+        return "\n\n---\n\n".join(results)
+
+    def clear(self) -> None:
+        self._documents.clear()
+
+
 def create_default_registry() -> ToolRegistry:
     """创建默认工具注册表"""
     registry = ToolRegistry()
@@ -435,5 +556,6 @@ def create_default_registry() -> ToolRegistry:
         FileWriterTool(),
         CodeExecutorTool(),
         APICallTool(),
+        DocumentRetrievalTool(),
     ])
     return registry

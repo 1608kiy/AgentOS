@@ -98,8 +98,7 @@ class PluginManager:
         """从entry_points加载插件"""
         try:
             from importlib.metadata import entry_points
-            eps = entry_points()
-            agentflow_eps = eps.get("agentflow.plugins", [])
+            agentflow_eps = entry_points(group="agentflow.plugins")
             loaded = 0
             for ep in agentflow_eps:
                 try:

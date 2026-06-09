@@ -3,7 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import time
 from datetime import datetime
+from pathlib import Path
+
+from dotenv import load_dotenv
+load_dotenv()
 
 import streamlit as st
 
@@ -31,94 +37,140 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ============ 全局CSS ============
-DARK_CSS = """
+# ============ 全局CSS — 简约现代 ============
+GLOBAL_CSS = """
 <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
-    .stApp { font-family: 'Inter', sans-serif; background: #0f172a; color: #e2e8f0; }
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap');
+
+    /* ===== 基础 ===== */
+    .stApp { font-family: 'Inter', sans-serif; background: #fafafa; }
     #MainMenu {visibility: hidden;} footer {visibility: hidden;} header {visibility: hidden;}
 
-    .top-nav {
-        background: linear-gradient(135deg, #1e1b4b 0%, #312e81 50%, #1e1b4b 100%);
-        padding: 12px 30px; border-radius: 0 0 16px 16px; margin: -1rem -1rem 1.5rem -1rem;
+    /* ===== 顶部栏 ===== */
+    .top-bar {
+        background: white;
+        padding: 12px 28px;
+        margin: -1rem -1rem 1.2rem -1rem;
         display: flex; align-items: center; justify-content: space-between;
+        border-bottom: 1px solid #f0f0f0;
     }
-    .top-nav h1 { color: white; font-size: 1.4rem; font-weight: 700; margin: 0; }
-    .top-nav .badge { background: rgba(255,255,255,0.15); color: #a78bfa; padding: 4px 12px; border-radius: 20px; font-size: 0.75rem; }
+    .top-bar h1 {
+        font-size: 1.1rem; font-weight: 600; color: #1a1a1a;
+        margin: 0; letter-spacing: -0.5px;
+    }
+    .top-bar .version {
+        font-size: 0.7rem; color: #999; font-weight: 400;
+        background: #f5f5f5; padding: 3px 10px; border-radius: 10px;
+    }
 
+    /* ===== 指标卡片 ===== */
     .metric-card {
-        background: linear-gradient(135deg, #4c1d95 0%, #6d28d9 100%); color: white;
-        border-radius: 16px; padding: 24px; text-align: center;
-        box-shadow: 0 8px 32px rgba(76, 29, 149, 0.4); transition: transform 0.2s;
+        background: white; color: #1a1a1a;
+        border: 1px solid #f0f0f0; border-radius: 12px;
+        padding: 20px; text-align: center;
     }
-    .metric-card:hover { transform: translateY(-4px); }
-    .metric-card .value { font-size: 2.5rem; font-weight: 700; margin: 8px 0; }
-    .metric-card .label { font-size: 0.85rem; opacity: 0.9; }
-    .metric-card.green { background: linear-gradient(135deg, #064e3b 0%, #059669 100%); }
-    .metric-card.orange { background: linear-gradient(135deg, #7c2d12 0%, #ea580c 100%); }
-    .metric-card.blue { background: linear-gradient(135deg, #1e3a5f 0%, #2563eb 100%); }
+    .metric-card .value { font-size: 1.8rem; font-weight: 600; margin: 6px 0; }
+    .metric-card .label { font-size: 0.7rem; color: #999; text-transform: uppercase; letter-spacing: 1px; }
+    .metric-card.green { border-top: 3px solid #22c55e; }
+    .metric-card.orange { border-top: 3px solid #f59e0b; }
+    .metric-card.blue { border-top: 3px solid #3b82f6; }
 
+    /* ===== Agent 卡片 ===== */
     .agent-card {
-        background: #1e293b; border: 1px solid #334155; border-radius: 12px;
-        padding: 16px; margin: 8px 0; transition: all 0.2s;
+        background: white; border: 1px solid #f0f0f0; border-radius: 10px;
+        padding: 12px 14px; margin: 4px 0;
+        display: flex; justify-content: space-between; align-items: center;
     }
-    .agent-card:hover { border-color: #818cf8; box-shadow: 0 4px 16px rgba(129,140,248,0.2); }
-    .agent-card .agent-name { font-weight: 600; color: #e2e8f0; }
-    .agent-card .agent-type { color: #94a3b8; font-size: 0.8rem; }
-    .agent-card .agent-status { display: inline-block; padding: 2px 10px; border-radius: 12px; font-size: 0.75rem; }
-    .status-idle { background: #064e3b; color: #6ee7b7; }
-    .status-thinking { background: #78350f; color: #fcd34d; }
-    .status-acting { background: #1e3a5f; color: #93c5fd; }
-    .status-error { background: #7f1d1d; color: #fca5a5; }
-    .status-completed { background: #064e3b; color: #6ee7b7; }
+    .agent-card:hover { border-color: #e0e0e0; }
+    .agent-card .agent-name { font-weight: 500; color: #1a1a1a; font-size: 0.85rem; }
+    .agent-card .agent-type { color: #aaa; font-size: 0.7rem; }
+    .agent-card .agent-status {
+        display: inline-block; padding: 2px 8px; border-radius: 6px;
+        font-size: 0.65rem; font-weight: 500;
+    }
+    .status-idle { background: #f0fdf4; color: #16a34a; }
+    .status-thinking { background: #fffbeb; color: #d97706; }
+    .status-acting { background: #eff6ff; color: #2563eb; }
+    .status-error { background: #fef2f2; color: #dc2626; }
+    .status-completed { background: #f0fdf4; color: #16a34a; }
 
-    [data-testid="stSidebar"] { background: linear-gradient(180deg, #0f172a 0%, #1e293b 100%); }
+    /* ===== 侧边栏 ===== */
+    [data-testid="stSidebar"] { background: white; border-right: 1px solid #f0f0f0; }
+    [data-testid="stSidebar"] .stMarkdown h4 { font-size: 0.8rem; font-weight: 600; color: #666; text-transform: uppercase; letter-spacing: 1px; margin-top: 1rem; }
+
+    /* ===== 分割线 ===== */
+    hr { border: none; border-top: 1px solid #f0f0f0; margin: 0.8rem 0; }
+
+    /* ===== 按钮 ===== */
+    .stButton > button {
+        border-radius: 8px; padding: 8px 16px; font-size: 0.82rem;
+        font-weight: 500; transition: all 0.15s;
+    }
+    .stButton > button:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+    .stButton > button[kind="primary"] { background: #1a1a1a; border-color: #1a1a1a; }
+    .stButton > button[kind="secondary"] { background: #f5f5f5; border-color: #e5e5e5; color: #666; }
+
+    /* ===== 输入框 ===== */
+    .stTextInput > div > div > input,
+    .stTextArea > div > div > textarea { border-radius: 8px; border-color: #e5e5e5; }
+    .stTextInput > div > div > input:focus,
+    .stTextArea > div > div > textarea:focus { border-color: #1a1a1a; box-shadow: 0 0 0 1px #1a1a1a; }
+
+    /* ===== 聊天 ===== */
+    [data-testid="stChatMessage"] { border-radius: 12px; }
+
+    /* ===== 选择框 ===== */
+    .stSelectbox > div > div { border-radius: 8px; border-color: #e5e5e5; }
+
+    /* ===== Tab ===== */
+    .stTabs [data-baseweb="tab-list"] { gap: 0; border-bottom: 1px solid #f0f0f0; }
+    .stTabs [data-baseweb="tab"] { font-size: 0.85rem; font-weight: 500; color: #999; padding: 12px 24px; }
+    .stTabs [aria-selected="true"] { color: #1a1a1a; border-bottom: 2px solid #1a1a1a; }
+
+    /* ===== Expander ===== */
+    .streamlit-expanderHeader { font-size: 0.82rem; color: #666; }
+
+    /* ===== 提示 ===== */
+    .stSuccess { border-left: 3px solid #22c55e; }
+    .stWarning { border-left: 3px solid #f59e0b; }
+    .stError { border-left: 3px solid #dc2626; }
+    .stInfo { border-left: 3px solid #3b82f6; }
+
+    /* ===== 动画 ===== */
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+    .agent-card { animation: fadeIn 0.2s ease; }
 </style>
 """
 
-LIGHT_CSS = """
-<style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
-    .stApp { font-family: 'Inter', sans-serif; }
-    #MainMenu {visibility: hidden;} footer {visibility: hidden;} header {visibility: hidden;}
 
-    .top-nav {
-        background: linear-gradient(135deg, #0f0c29 0%, #302b63 50%, #24243e 100%);
-        padding: 12px 30px; border-radius: 0 0 16px 16px; margin: -1rem -1rem 1.5rem -1rem;
-        display: flex; align-items: center; justify-content: space-between;
-    }
-    .top-nav h1 { color: white; font-size: 1.4rem; font-weight: 700; margin: 0; letter-spacing: -0.5px; }
-    .top-nav .badge { background: rgba(255,255,255,0.15); color: #a78bfa; padding: 4px 12px; border-radius: 20px; font-size: 0.75rem; }
+# ============ 数据持久化 ============
+DATA_DIR = Path(__file__).resolve().parents[3] / "data"
+CONV_FILE = DATA_DIR / "conversations.json"
 
-    .metric-card {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white;
-        border-radius: 16px; padding: 24px; text-align: center;
-        box-shadow: 0 8px 32px rgba(102, 126, 234, 0.3); transition: transform 0.2s;
-    }
-    .metric-card:hover { transform: translateY(-4px); }
-    .metric-card .value { font-size: 2.5rem; font-weight: 700; margin: 8px 0; }
-    .metric-card .label { font-size: 0.85rem; opacity: 0.9; }
-    .metric-card.green { background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%); }
-    .metric-card.orange { background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); }
-    .metric-card.blue { background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%); }
 
-    .agent-card {
-        background: white; border: 1px solid #e5e7eb; border-radius: 12px;
-        padding: 16px; margin: 8px 0; transition: all 0.2s;
-    }
-    .agent-card:hover { border-color: #667eea; box-shadow: 0 4px 16px rgba(102,126,234,0.15); }
-    .agent-card .agent-name { font-weight: 600; color: #1f2937; }
-    .agent-card .agent-type { color: #6b7280; font-size: 0.8rem; }
-    .agent-card .agent-status { display: inline-block; padding: 2px 10px; border-radius: 12px; font-size: 0.75rem; }
-    .status-idle { background: #d1fae5; color: #065f46; }
-    .status-thinking { background: #fef3c7; color: #92400e; }
-    .status-acting { background: #dbeafe; color: #1e40af; }
-    .status-error { background: #fee2e2; color: #991b1b; }
-    .status-completed { background: #d1fae5; color: #065f46; }
+def _save_conversations() -> None:
+    """保存对话到文件"""
+    DATA_DIR.mkdir(exist_ok=True)
+    data = {}
+    for cid, conv in st.session_state.conversations.items():
+        data[cid] = {
+            "name": conv["name"],
+            "messages": conv["messages"],
+            "created_at": conv["created_at"],
+            "pinned": conv.get("pinned", False),
+            "tags": conv.get("tags", []),
+        }
+    CONV_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    [data-testid="stSidebar"] { background: linear-gradient(180deg, #f8fafc 0%, #e2e8f0 100%); }
-</style>
-"""
+
+def _load_conversations() -> dict:
+    """从文件加载对话"""
+    if CONV_FILE.exists():
+        try:
+            return json.loads(CONV_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {}
 
 
 # ============ 会话状态初始化 ============
@@ -127,8 +179,19 @@ def init_session_state():
         st.session_state.agents = {}
     if "orchestrator" not in st.session_state:
         st.session_state.orchestrator = AgentOrchestrator()
-    if "chat_history" not in st.session_state:
-        st.session_state.chat_history = []
+    if "conversations" not in st.session_state:
+        st.session_state.conversations = _load_conversations()
+    if "current_conversation_id" not in st.session_state:
+        if st.session_state.conversations:
+            st.session_state.current_conversation_id = list(st.session_state.conversations.keys())[-1]
+        else:
+            cid = f"conv_{int(time.time())}"
+            st.session_state.current_conversation_id = cid
+            st.session_state.conversations[cid] = {
+                "name": "新对话",
+                "messages": [],
+                "created_at": datetime.now().isoformat(),
+            }
     if "current_agent" not in st.session_state:
         st.session_state.current_agent = None
     if "execution_log" not in st.session_state:
@@ -141,11 +204,73 @@ def init_session_state():
     if "workflows" not in st.session_state:
         st.session_state.workflows = {}
     if "total_messages" not in st.session_state:
-        st.session_state.total_messages = 0
+        st.session_state.total_messages = sum(len(c["messages"]) for c in st.session_state.conversations.values())
+
+
+def get_current_chat() -> dict:
+    """获取当前对话"""
+    cid = st.session_state.current_conversation_id
+    return st.session_state.conversations[cid]
+
+
+def new_conversation() -> None:
+    """新建对话"""
+    cid = f"conv_{int(time.time())}"
+    st.session_state.conversations[cid] = {
+        "name": "新对话",
+        "messages": [],
+        "created_at": datetime.now().isoformat(),
+        "pinned": False,
+        "tags": [],
+    }
+    st.session_state.current_conversation_id = cid
+    for agent in st.session_state.agents.values():
+        agent.reset()
+    _save_conversations()
 
 
 def create_agent(agent_type: str, name: str, system_prompt: str = ""):
-    config = AgentConfig(agent_name=name, system_prompt=system_prompt)
+    import os
+    from agentflow.core.config import LLMProvider
+
+    provider_name = st.session_state.get("settings_provider", "mimo")
+    provider_map = {
+        "openai": LLMProvider.OPENAI,
+        "anthropic": LLMProvider.ANTHROPIC,
+        "local": LLMProvider.LOCAL,
+        "mimo": LLMProvider.MIMO,
+    }
+    provider = provider_map.get(provider_name, LLMProvider.MIMO)
+
+    # 优先从 session_state 读（用户在UI输入的），兜底从 .env 环境变量读
+    api_key = st.session_state.get("settings_openai_key", "") or os.environ.get("LLM_API_KEY", "")
+    anthropic_key = st.session_state.get("settings_anthropic_key", "") or os.environ.get("ANTHROPIC_API_KEY", "")
+    mimo_key = st.session_state.get("settings_mimo_key", "") or os.environ.get("LLM_API_KEY", "")
+    model = st.session_state.get("settings_model") or os.environ.get("LLM_MODEL", "mimo-v2.5-pro")
+    temperature = st.session_state.get("settings_temperature", 0.7)
+    max_tokens = st.session_state.get("settings_max_tokens", 4096)
+
+    config = AgentConfig(
+        agent_name=name,
+        system_prompt=system_prompt,
+        llm_provider=provider,
+        llm_model=model,
+        temperature=temperature,
+        max_tokens=max_tokens,
+    )
+
+    if provider_name == "mimo":
+        config.llm_api_key = mimo_key
+        config.llm_provider = LLMProvider.MIMO
+        os.environ["LLM_API_KEY"] = mimo_key
+        os.environ["LLM_OPENAI_BASE_URL"] = "https://token-plan-sgp.xiaomimimo.com/v1"
+    elif provider_name == "openai":
+        config.llm_api_key = api_key
+        os.environ["LLM_API_KEY"] = api_key
+    elif provider_name == "anthropic":
+        os.environ["ANTHROPIC_API_KEY"] = anthropic_key
+        config.llm_api_key = anthropic_key
+
     agent_map = {
         "ReAct Agent": ReActAgent,
         "Planner": PlannerAgent,
@@ -161,8 +286,6 @@ def create_agent(agent_type: str, name: str, system_prompt: str = ""):
 
     st.session_state.agents[agent.id] = agent
     st.session_state.orchestrator.register_agent(agent)
-
-    # 注册到工作流引擎
     st.session_state.workflow_engine.executor.register_agent(name, agent)
 
     return agent
@@ -170,16 +293,12 @@ def create_agent(agent_type: str, name: str, system_prompt: str = ""):
 
 # ============ 顶部导航 ============
 def render_top_nav():
-    # 根据主题注入CSS
-    if st.session_state.get("dark_mode", False):
-        st.markdown(DARK_CSS, unsafe_allow_html=True)
-    else:
-        st.markdown(LIGHT_CSS, unsafe_allow_html=True)
+    st.markdown(GLOBAL_CSS, unsafe_allow_html=True)
 
     st.markdown("""
-    <div class="top-nav">
-        <h1>⚡ AgentFlow</h1>
-        <span class="badge">v0.2.0 · Enterprise</span>
+    <div class="top-bar">
+        <h1>AgentFlow</h1>
+        <span class="version">v0.2</span>
     </div>
     """, unsafe_allow_html=True)
 
@@ -187,92 +306,271 @@ def render_top_nav():
 # ============ 侧边栏 ============
 def render_sidebar():
     with st.sidebar:
-        st.markdown("### 🎛️ 控制面板")
+        # ===== 对话管理 =====
+        st.markdown("### 对话")
+        col_new, col_del = st.columns(2)
+        with col_new:
+            if st.button("新建", use_container_width=True):
+                new_conversation()
+                st.rerun()
+        with col_del:
+            if st.button("清空", use_container_width=True):
+                chat = get_current_chat()
+                chat["messages"] = []
+                for agent in st.session_state.agents.values():
+                    agent.reset()
+                _save_conversations()
+                st.rerun()
+
+        # 搜索框
+        search_query = st.text_input("搜索", placeholder="搜索对话...", key="conv_search", label_visibility="collapsed")
+
+        # 对话列表
+        convs = st.session_state.conversations
+        # 搜索过滤
+        search_query = st.session_state.get("conv_search", "")
+        display_convs = {}
+        for cid, conv in convs.items():
+            if not search_query or search_query.lower() in conv["name"].lower():
+                display_convs[cid] = conv
+
+        # 置顶优先排序
+        sorted_convs = sorted(display_convs.items(), key=lambda x: (not x[1].get("pinned", False), x[1].get("created_at", "")))
+
+        for cid, conv in sorted_convs[-8:][::-1]:
+            is_current = cid == st.session_state.current_conversation_id
+            msg_count = len(conv["messages"])
+            is_pinned = conv.get("pinned", False)
+
+            col_pin, col_name, col_ren, col_del = st.columns([1, 4, 1, 1])
+            with col_pin:
+                pin_label = "*" if is_pinned else ""
+                if st.button(pin_label, key=f"pin_{cid}", help="置顶"):
+                    conv["pinned"] = not is_pinned
+                    _save_conversations()
+                    st.rerun()
+            with col_name:
+                tags = conv.get("tags", [])
+                tag_str = " ".join(tags) if tags else ""
+                label = f"{'>' if is_current else ''} {conv['name']} ({msg_count}) {tag_str}"
+                if st.button(label, key=f"conv_{cid}", use_container_width=True, type="primary" if is_current else "secondary"):
+                    st.session_state.current_conversation_id = cid
+                    for agent in st.session_state.agents.values():
+                        agent.reset()
+                    st.rerun()
+            with col_ren:
+                if st.button("e", key=f"ren_{cid}", help="重命名"):
+                    st.session_state[f"renaming_{cid}"] = True
+                    st.rerun()
+            with col_del:
+                if st.button("x", key=f"del_{cid}", help="删除"):
+                    del st.session_state.conversations[cid]
+                    if cid == st.session_state.current_conversation_id:
+                        if st.session_state.conversations:
+                            st.session_state.current_conversation_id = list(st.session_state.conversations.keys())[-1]
+                        else:
+                            new_conversation()
+                    _save_conversations()
+                    st.rerun()
+
+            # 重命名输入
+            if st.session_state.get(f"renaming_{cid}"):
+                new_name = st.text_input("新名称", value=conv["name"], key=f"rn_{cid}")
+                # 标签输入
+                existing_tags = " ".join(conv.get("tags", []))
+                new_tags = st.text_input("标签", value=existing_tags, placeholder="空格分隔", key=f"tags_{cid}")
+                c_ok, c_no = st.columns(2)
+                with c_ok:
+                    if st.button("OK", key=f"rn_ok_{cid}"):
+                        conv["name"] = new_name
+                        conv["tags"] = new_tags.split() if new_tags.strip() else []
+                        st.session_state[f"renaming_{cid}"] = False
+                        _save_conversations()
+                        st.rerun()
+                with c_no:
+                    if st.button("取消", key=f"rn_no_{cid}"):
+                        st.session_state[f"renaming_{cid}"] = False
+                        st.rerun()
+
         st.markdown("---")
 
-        # Agent创建
-        st.markdown("#### 创建 Agent")
-        agent_type = st.selectbox(
-            "类型",
-            ["ReAct Agent", "Planner", "Researcher", "Coder", "Reviewer", "Summarizer"],
-            label_visibility="collapsed",
-        )
-        agent_name = st.text_input("名称", f"{agent_type}_{len(st.session_state.agents)+1}", label_visibility="collapsed")
-        system_prompt = st.text_area("系统提示", placeholder="定义Agent角色...", height=80, label_visibility="collapsed")
-
-        if st.button("➕ 创建 Agent", use_container_width=True, type="primary"):
-            agent = create_agent(agent_type, agent_name, system_prompt)
-            st.success(f"✅ {agent.name}")
-            st.rerun()
+        # ===== 预设模板 =====
+        with st.expander("快速创建", expanded=False):
+            presets = {
+                "代码审查专家": ("ReAct Agent", "你是代码审查专家。审查代码的安全漏洞、代码质量和性能问题，给出严重程度评级和修复建议。"),
+                "Python 开发者": ("Coder", "你是 Python 开发专家。编写高质量、符合 PEP8 的代码，注重可读性和性能。"),
+                "技术文档写手": ("Summarizer", "你是技术文档专家。将复杂的技术内容转化为清晰、简洁的文档和教程。"),
+                "数据分析助手": ("Researcher", "你是数据分析专家。分析数据趋势、生成洞察报告、提供数据驱动的建议。"),
+                "全栈工程师": ("ReAct Agent", "你是全栈工程师。精通前后端开发、数据库设计、API 开发和系统架构。"),
+            }
+            for name, (atype, prompt) in presets.items():
+                if st.button(f"{name}", key=f"preset_{name}", use_container_width=True):
+                    agent = create_agent(atype, name, prompt)
+                    st.success(f"{agent.name} 已创建")
+                    st.rerun()
 
         st.markdown("---")
 
-        # Agent列表
-        st.markdown("#### 🤖 Agent 列表")
-        if not st.session_state.agents:
-            st.caption("暂无Agent，请先创建")
-        else:
-            for aid, agent in st.session_state.agents.items():
+        # ===== Agent 管理 =====
+        with st.expander("创建 Agent", expanded=True):
+            agent_type = st.selectbox("类型", ["ReAct Agent", "Planner", "Researcher", "Coder", "Reviewer", "Summarizer"])
+            agent_name = st.text_input("名称", f"{agent_type}_{len(st.session_state.agents)+1}")
+            system_prompt = st.text_area("系统提示", placeholder="定义 Agent 角色...", height=60)
+            if st.button("创建", use_container_width=True, type="primary"):
+                agent = create_agent(agent_type, agent_name, system_prompt)
+                st.success(f"{agent.name} 已创建")
+                st.rerun()
+
+        # Agent 列表（带删除）
+        if st.session_state.agents:
+            st.markdown("#### 已创建")
+            for aid, agent in list(st.session_state.agents.items()):
                 status_class = f"status-{agent.state.status.value}"
-                st.markdown(f"""
-                <div class="agent-card">
-                    <div class="agent-name">{agent.name}</div>
-                    <div class="agent-type">{type(agent).__name__}</div>
-                    <span class="agent-status {status_class}">{agent.state.status.value}</span>
-                </div>
-                """, unsafe_allow_html=True)
+                c_info, c_del_a = st.columns([5, 1])
+                with c_info:
+                    st.markdown(f"""
+                    <div class="agent-card">
+                        <div>
+                            <div class="agent-name">{agent.name}</div>
+                            <div class="agent-type">{type(agent).__name__}</div>
+                        </div>
+                        <span class="agent-status {status_class}">{agent.state.status.value}</span>
+                    </div>
+                    """, unsafe_allow_html=True)
+                with c_del_a:
+                    if st.button("x", key=f"del_ag_{aid}", help="删除"):
+                        del st.session_state.agents[aid]
+                        st.rerun()
 
         st.markdown("---")
 
-        # 主题切换
-        st.markdown("#### 🎨 主题")
-        dark_mode = st.toggle("暗色模式", value=st.session_state.get("dark_mode", False))
-        st.session_state.dark_mode = dark_mode
+        # ===== 设置折叠 =====
+        with st.expander("API 设置"):
+            import os
+            env_key = os.environ.get("LLM_API_KEY", "")
+            env_provider = os.environ.get("LLM_PROVIDER", "mimo")
 
-        # 编排策略
-        st.markdown("#### 🔄 编排策略")
-        strategy = st.selectbox(
-            "策略",
-            ["sequential", "parallel", "debate", "supervisor"],
-            format_func=lambda x: {
-                "sequential": "📎 串行执行",
-                "parallel": "⚡ 并行执行",
-                "debate": "💬 辩论模式",
-                "supervisor": "👔 主管模式",
-            }.get(x, x),
-        )
-        st.session_state.strategy = strategy
+            quick_provider = st.selectbox(
+                "提供商",
+                ["mimo", "openai", "anthropic", "local"],
+                index=["mimo", "openai", "anthropic", "local"].index(env_provider) if env_provider in ["mimo", "openai", "anthropic", "local"] else 0,
+                key="sidebar_provider",
+            )
+            if quick_provider == "mimo":
+                quick_key = st.text_input("API Key", value=env_key, type="password", key="sidebar_mimo_key")
+                if quick_key:
+                    st.session_state["settings_provider"] = "mimo"
+                    st.session_state["settings_mimo_key"] = quick_key
+                    st.session_state.setdefault("settings_model", "mimo-v2.5-pro")
+            elif quick_provider == "openai":
+                quick_key = st.text_input("API Key", type="password", key="sidebar_openai_key")
+                if quick_key:
+                    st.session_state["settings_provider"] = "openai"
+                    st.session_state["settings_openai_key"] = quick_key
+                    st.session_state.setdefault("settings_model", "gpt-4o-mini")
+            elif quick_provider == "anthropic":
+                quick_key = st.text_input("API Key", type="password", key="sidebar_anthropic_key")
+                if quick_key:
+                    st.session_state["settings_provider"] = "anthropic"
+                    st.session_state["settings_anthropic_key"] = quick_key
+                    st.session_state.setdefault("settings_model", "claude-sonnet-4-20250514")
+            else:
+                st.session_state["settings_provider"] = "local"
+                st.caption("需本地运行 Ollama")
 
-        strategy_icons = {
-            "sequential": "Agent链式执行，前者输出为后者输入",
-            "parallel": "所有Agent同时处理同一任务",
-            "debate": "多轮讨论，最终得出结论",
-            "supervisor": "主管分配任务，Worker执行",
-        }
-        st.caption(strategy_icons.get(strategy, ""))
+            # API 状态
+            provider = st.session_state.get("settings_provider", "")
+            if provider == "mimo":
+                key = st.session_state.get("settings_mimo_key", "") or env_key
+                if key: st.success("MiMo 已连接")
+                else: st.warning("未配置")
+            elif provider == "openai":
+                key = st.session_state.get("settings_openai_key", "") or env_key
+                if key: st.success("OpenAI 已连接")
+                else: st.warning("未配置")
+            elif provider == "anthropic":
+                key = st.session_state.get("settings_anthropic_key", "") or os.environ.get("ANTHROPIC_API_KEY", "")
+                if key: st.success("Anthropic 已连接")
+                else: st.warning("未配置")
+            else:
+                st.info("本地模型模式")
+
+        with st.expander("文档知识库"):
+            uploaded_files = st.file_uploader(
+                "上传文档",
+                type=["txt", "md", "py", "json", "csv"],
+                accept_multiple_files=True,
+            )
+            if uploaded_files:
+                from agentflow.tools.base import DocumentRetrievalTool
+                doc_tool = None
+                for agent in st.session_state.agents.values():
+                    if hasattr(agent, "tools") and agent.tools:
+                        doc_tool = agent.tools.get("document_retrieval")
+                        if doc_tool: break
+                if doc_tool is None:
+                    doc_tool = DocumentRetrievalTool()
+                total_chunks = 0
+                for uf in uploaded_files:
+                    content = uf.read().decode("utf-8", errors="ignore")
+                    chunks = doc_tool.load_text(content, source=uf.name)
+                    total_chunks += chunks
+                st.caption(f"{len(uploaded_files)} 文件 / {total_chunks} 片段")
+
+        with st.expander("编排策略"):
+            strategy = st.selectbox(
+                "策略",
+                ["sequential", "parallel", "debate", "supervisor"],
+                format_func=lambda x: {"sequential": "串行", "parallel": "并行", "debate": "辩论", "supervisor": "主管"}[x],
+                key="strategy",
+            )
 
 
 # ============ 对话页面 ============
 def chat_page():
+    chat = get_current_chat()
+    messages = chat["messages"]
+
     col1, col2 = st.columns([2, 1])
 
     with col1:
-        st.markdown("### 💬 智能对话")
+        # 导出按钮
+        if messages:
+            md_lines = [f"# {chat['name']}\n"]
+            for msg in messages:
+                role = "用户" if msg["role"] == "user" else "Agent"
+                md_lines.append(f"## {role}\n\n{msg['content']}\n")
+            md_content = "\n".join(md_lines)
+            st.download_button("导出 Markdown", md_content, file_name=f"{chat['name']}.md", mime="text/markdown")
+
+        st.markdown("### 对话")
+
+        # 新手引导
+        if not messages:
+            st.info("👋 欢迎使用 AgentFlow！\n\n1. 在左侧创建一个 Agent\n2. 在下方输入框输入任务\n3. 开始对话")
 
         # 聊天历史
         chat_container = st.container(height=400)
         with chat_container:
-            for msg in st.session_state.chat_history:
+            for msg in messages:
                 with st.chat_message(msg["role"]):
                     st.markdown(msg["content"])
+                    if "steps" in msg:
+                        with st.expander("执行过程"):
+                            for step in msg["steps"]:
+                                st.caption(step)
                     if "metadata" in msg:
-                        with st.expander("📋 执行详情"):
+                        with st.expander("执行详情"):
                             st.json(msg["metadata"])
 
         # 输入
         if prompt := st.chat_input("输入你的任务..."):
-            st.session_state.chat_history.append({"role": "user", "content": prompt})
+            messages.append({"role": "user", "content": prompt})
             st.session_state.total_messages += 1
+
+            # 自动命名对话（取前10个字）
+            if chat["name"] == "新对话" and len(messages) == 1:
+                chat["name"] = prompt[:15] + ("..." if len(prompt) > 15 else "")
 
             with chat_container:
                 with st.chat_message("user"):
@@ -285,53 +583,115 @@ def chat_page():
 
             with chat_container:
                 with st.chat_message("assistant"):
-                    with st.spinner("🤔 Agent正在思考..."):
-                        try:
-                            strategy = st.session_state.get("strategy", "sequential")
-                            orchestrator = st.session_state.orchestrator
-                            orchestrator.strategy = OrchestrationStrategy(strategy)
+                    strategy = st.session_state.get("strategy", "sequential")
+                    start_time = time.perf_counter()
+                    steps: list[str] = []
+
+                    # 状态提示
+                    status_placeholder = st.empty()
+                    status_placeholder.caption("连接中...")
+
+                    try:
+                        # 单Agent模式：流式输出
+                        if len(agents) == 1 and strategy == "sequential":
+                            agent = agents[0]
+                            steps.append(f"[{agent.name}] 开始思考...")
+                            status_placeholder.caption(f"[{agent.name}] 思考中...")
+
+                            # 记录执行前的消息数
+                            msgs_before = len(agent.conversation)
+
+                            async def _stream_gen():
+                                async for chunk in agent.stream_chat(prompt):
+                                    yield chunk
 
                             loop = asyncio.new_event_loop()
-                            result = loop.run_until_complete(
-                                orchestrator.run(prompt, [a.id for a in agents])
-                            )
+                            full_text = st.write_stream(loop.run_until_complete(_stream_gen()))
+                            status_placeholder.empty()
+                            duration = (time.perf_counter() - start_time) * 1000
 
-                            st.markdown(result.final_output)
+                            # 提取工具调用信息
+                            new_msgs = agent.conversation.messages[msgs_before:]
+                            for m in new_msgs:
+                                if hasattr(m, 'role') and m.role.value == 'tool':
+                                    tool_name = m.name or "unknown"
+                                    result_preview = m.content[:80] + ("..." if len(m.content) > 80 else "")
+                                    steps.append(f"  工具调用: {tool_name} → {result_preview}")
 
-                            metadata = {
-                                "strategy": strategy,
-                                "duration_ms": round(result.duration_ms, 1),
-                                "agents_used": len(agents),
-                                "iterations": sum(r.get("iterations", 0) for r in result.results.values() if isinstance(r, dict)),
-                            }
-                            with st.expander("📋 执行详情"):
-                                st.json(result.to_dict())
-
-                            st.session_state.chat_history.append({
+                            steps.append(f"完成 ({duration:.0f}ms)")
+                            messages.append({
                                 "role": "assistant",
-                                "content": result.final_output,
-                                "metadata": metadata,
+                                "content": full_text,
+                                "steps": steps,
+                                "metadata": {"strategy": "stream", "duration_ms": round(duration, 1)},
                             })
-                            st.session_state.total_messages += 1
-
-                            # 记录执行日志
                             st.session_state.execution_log.append({
                                 "timestamp": datetime.now().isoformat(),
                                 "task": prompt[:100],
-                                "strategy": strategy,
-                                "duration_ms": round(result.duration_ms, 1),
+                                "strategy": "stream",
+                                "duration_ms": round(duration, 1),
                                 "status": "success",
                             })
 
-                        except Exception as e:
-                            st.error(f"❌ 执行错误: {e}")
+                        # 多Agent模式：流式编排
+                        else:
+                            steps.append(f"策略: {strategy} | Agent数: {len(agents)}")
+                            for a in agents:
+                                steps.append(f"  {a.name} ({type(a).__name__})")
+
+                            orchestrator = st.session_state.orchestrator
+                            orchestrator.strategy = OrchestrationStrategy(strategy)
+
+                            async def _orch_stream():
+                                async for chunk in orchestrator.run_stream(prompt, [a.id for a in agents]):
+                                    yield chunk
+
+                            loop = asyncio.new_event_loop()
+                            full_text = st.write_stream(loop.run_until_complete(_orch_stream()))
+                            duration = (time.perf_counter() - start_time) * 1000
+
+                            steps.append(f"完成 ({duration:.0f}ms)")
+                            metadata = {
+                                "strategy": strategy,
+                                "duration_ms": round(duration, 1),
+                                "agents_used": len(agents),
+                            }
+                            messages.append({
+                                "role": "assistant",
+                                "content": full_text,
+                                "steps": steps,
+                                "metadata": metadata,
+                            })
                             st.session_state.execution_log.append({
                                 "timestamp": datetime.now().isoformat(),
                                 "task": prompt[:100],
                                 "strategy": strategy,
-                                "status": "error",
-                                "error": str(e),
+                                "duration_ms": round(duration, 1),
+                                "status": "success",
                             })
+
+                        st.session_state.total_messages += 1
+                        _save_conversations()
+
+                    except Exception as e:
+                        st.error(f"执行错误: {e}")
+                        steps.append(f"错误: {e}")
+                        messages.append({
+                            "role": "assistant",
+                            "content": f"执行出错: {e}",
+                            "steps": steps,
+                        })
+                        if st.button("重试", key=f"retry_{len(messages)}"):
+                            messages.pop()  # 移除错误消息
+                            st.rerun()
+                        st.session_state.execution_log.append({
+                            "timestamp": datetime.now().isoformat(),
+                            "task": prompt[:100],
+                            "strategy": strategy,
+                            "status": "error",
+                            "error": str(e),
+                        })
+                        _save_conversations()
 
     with col2:
         st.markdown("### 📊 实时状态")
@@ -367,7 +727,8 @@ def chat_page():
         if st.session_state.execution_log:
             for log in st.session_state.execution_log[-5:][::-1]:
                 icon = "✅" if log["status"] == "success" else "❌"
-                st.caption(f"{icon} {log['task']} ({log['duration_ms']}ms)")
+                ms = log.get("duration_ms", 0)
+                st.caption(f"{icon} {log['task']} ({ms}ms)")
         else:
             st.caption("暂无执行记录")
 
@@ -404,8 +765,27 @@ def workflow_page():
         st.markdown("#### 已创建工作流")
         if st.session_state.workflows:
             for wf_id, wf in st.session_state.workflows.items():
-                with st.expander(f"📋 {wf.name}"):
+                with st.expander(f"📋 {wf.name} — {wf.description}"):
                     st.json(wf.to_dict())
+                    exec_key = f"exec_wf_{wf_id}"
+                    task_input = st.text_input("输入任务", key=f"task_{wf_id}", placeholder="描述工作流要处理的任务...")
+                    if st.button("▶️ 执行工作流", key=exec_key, type="primary"):
+                        if not task_input:
+                            st.warning("请输入任务描述")
+                        else:
+                            with st.spinner("工作流执行中..."):
+                                try:
+                                    loop = asyncio.new_event_loop()
+                                    result = loop.run_until_complete(
+                                        st.session_state.workflow_engine.execute(wf, {"task": task_input})
+                                    )
+                                    if result.status == "completed":
+                                        st.success("✅ 执行完成")
+                                    else:
+                                        st.error(f"❌ 执行失败: {result.status}")
+                                    st.json({k: v.model_dump() if hasattr(v, 'model_dump') else str(v) for k, v in result.node_results.items()})
+                                except Exception as e:
+                                    st.error(f"❌ {e}")
         else:
             st.info("暂无工作流，请使用上方模板创建")
 
@@ -426,7 +806,21 @@ def workflow_page():
 
 
 def _create_customer_service_workflow():
-    from agentflow.workflow.engine import WorkflowBuilder, NodeType
+    from agentflow.workflow.engine import WorkflowBuilder
+
+    # 先创建并注册所需的 Agent
+    needed = {
+        "Planner": "分析用户意图，决定路由到哪个处理模块",
+        "ReAct Agent": "处理订单相关的客户问题",
+        "Coder": "处理技术支持和代码相关问题",
+        "Researcher": "处理销售咨询和产品信息查询",
+        "Summarizer": "整合各模块的处理结果，生成最终回复",
+    }
+    for agent_type, prompt in needed.items():
+        existing = [a for a in st.session_state.agents.values() if type(a).__name__ == agent_type.replace(" ", "")]
+        if not existing:
+            create_agent(agent_type, agent_type, prompt)
+
     builder = WorkflowBuilder("智能客服", "用户咨询 → 意图识别 → 专业处理 → 总结")
     builder.add_agent_node("意图识别", "Planner", "分析用户意图")
     builder.add_agent_node("订单处理", "ReAct Agent", "处理订单问题")
@@ -447,7 +841,17 @@ def _create_customer_service_workflow():
 
 
 def _create_code_review_workflow():
-    from agentflow.workflow.engine import WorkflowBuilder, NodeType
+    from agentflow.workflow.engine import WorkflowBuilder
+
+    needed = {
+        "Reviewer": "审查代码质量、安全漏洞和性能问题",
+        "Summarizer": "整合多维度审查结果，生成综合报告",
+    }
+    for agent_type, prompt in needed.items():
+        existing = [a for a in st.session_state.agents.values() if type(a).__name__ == agent_type]
+        if not existing:
+            create_agent(agent_type, agent_type, prompt)
+
     builder = WorkflowBuilder("代码审查", "提交代码 → 多维度审查 → 综合报告")
     builder.add_agent_node("安全扫描", "Reviewer", "检查安全漏洞")
     builder.add_agent_node("质量检查", "Reviewer", "检查代码质量")
@@ -464,7 +868,18 @@ def _create_code_review_workflow():
 
 
 def _create_data_analysis_workflow():
-    from agentflow.workflow.engine import WorkflowBuilder, NodeType
+    from agentflow.workflow.engine import WorkflowBuilder
+
+    needed = {
+        "Planner": "制定数据分析计划",
+        "Coder": "执行数据分析代码",
+        "Summarizer": "生成分析报告",
+    }
+    for agent_type, prompt in needed.items():
+        existing = [a for a in st.session_state.agents.values() if type(a).__name__ == agent_type]
+        if not existing:
+            create_agent(agent_type, agent_type, prompt)
+
     builder = WorkflowBuilder("数据分析", "需求 → 规划 → 分析 → 报告")
     builder.add_agent_node("分析规划", "Planner", "制定分析计划")
     builder.add_agent_node("数据分析", "Coder", "执行数据分析")
@@ -480,7 +895,14 @@ def _create_data_analysis_workflow():
 
 # ============ 监控面板页面 ============
 def monitoring_page():
-    st.markdown("### 📊 监控面板")
+    st.markdown("### 监控面板")
+
+    # 自动刷新
+    col_title, col_refresh = st.columns([5, 1])
+    with col_refresh:
+        if st.button("刷新", use_container_width=True):
+            st.rerun()
+    auto_refresh = st.checkbox("自动刷新 (5秒)", key="auto_refresh")
 
     # 顶部指标
     col1, col2, col3, col4 = st.columns(4)
@@ -505,18 +927,21 @@ def monitoring_page():
         """, unsafe_allow_html=True)
 
     with col3:
+        total_tok = sum(total_tokens.values())
         st.markdown(f"""
         <div class="metric-card orange">
             <div class="label">总Token</div>
-            <div class="value">{sum(total_tokens.values()):,}</div>
+            <div class="value">{total_tok:,}</div>
         </div>
         """, unsafe_allow_html=True)
 
     with col4:
+        # 估算成本（按 GPT-4o-mini 价格 $0.15/1M input, $0.6/1M output）
+        estimated_cost = total_tok * 0.0000003  # 粗略估算
         st.markdown(f"""
         <div class="metric-card blue">
-            <div class="label">执行次数</div>
-            <div class="value">{len(st.session_state.execution_log)}</div>
+            <div class="label">估算成本</div>
+            <div class="value">${estimated_cost:.4f}</div>
         </div>
         """, unsafe_allow_html=True)
 
@@ -557,8 +982,13 @@ def monitoring_page():
                     fig.update_layout(height=300, margin=dict(l=0, r=0, t=30, b=0))
                     st.plotly_chart(fig, use_container_width=True)
             except ImportError:
-                if "duration_ms" in pd.DataFrame(st.session_state.execution_log).columns:
-                    st.line_chart(pd.DataFrame(st.session_state.execution_log)["duration_ms"])
+                try:
+                    import pandas as pd
+                    df = pd.DataFrame(st.session_state.execution_log)
+                    if "duration_ms" in df.columns:
+                        st.line_chart(df["duration_ms"])
+                except ImportError:
+                    st.info("安装 plotly 和 pandas 以查看图表: pip install plotly pandas")
         else:
             st.info("暂无执行记录")
 
@@ -595,6 +1025,11 @@ def monitoring_page():
     else:
         st.info("暂无Agent")
 
+    # 自动刷新
+    if st.session_state.get("auto_refresh"):
+        time.sleep(5)
+        st.rerun()
+
 
 # ============ 主函数 ============
 def main():
@@ -602,8 +1037,8 @@ def main():
     render_top_nav()
     render_sidebar()
 
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
-        "💬 对话", "🔧 工作流", "📊 监控", "🧪 评估", "🔌 插件"
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+        "💬 对话", "🔧 工作流", "📊 监控", "🧪 评估", "🔌 插件", "⚙️ 设置"
     ])
 
     with tab1:
@@ -618,6 +1053,9 @@ def main():
     with tab5:
         from agentflow.ui.pages.plugin_page import render_plugin_page
         render_plugin_page()
+    with tab6:
+        from agentflow.ui.pages.settings_page import render_settings_page
+        render_settings_page()
 
 
 if __name__ == "__main__":

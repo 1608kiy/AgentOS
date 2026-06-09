@@ -22,6 +22,7 @@ class LLMProvider(str, Enum):
     OPENAI = "openai"
     ANTHROPIC = "anthropic"
     LOCAL = "local"
+    MIMO = "mimo"
 
 
 class LogLevel(str, Enum):
@@ -47,8 +48,12 @@ class LLMConfig(BaseSettings):
     max_tokens: int = 4096
     timeout: int = 60
 
+    # OpenAI兼容端点（MiMo等第三方服务）
+    openai_base_url: str = ""
+
     # Anthropic配置
     anthropic_api_key: str = ""
+    anthropic_base_url: str = ""
 
     # 本地LLM配置
     local_base_url: str = "http://localhost:11434"

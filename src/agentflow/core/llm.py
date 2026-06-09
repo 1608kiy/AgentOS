@@ -185,13 +185,16 @@ class LLMClient(ABC):
 
 
 class OpenAIClient(LLMClient):
-    """OpenAI客户端"""
+    """OpenAI客户端（兼容 MiMo 等第三方 OpenAI 协议服务）"""
 
     def __init__(self, config: LLMConfig):
         super().__init__(config)
         try:
             from openai import AsyncOpenAI
-            self.client = AsyncOpenAI(api_key=config.api_key)
+            kwargs: dict[str, Any] = {"api_key": config.api_key}
+            if config.openai_base_url:
+                kwargs["base_url"] = config.openai_base_url
+            self.client = AsyncOpenAI(**kwargs)
         except ImportError:
             raise ImportError("请安装openai: pip install openai")
 
@@ -210,8 +213,12 @@ class OpenAIClient(LLMClient):
             **kwargs,
         )
         choice = response.choices[0]
+        content = choice.message.content or ""
+        # 推理模型（MiMo等）的回复可能在 reasoning_content 里
+        if not content and hasattr(choice.message, "reasoning_content"):
+            content = choice.message.reasoning_content or ""
         return LLMResponse(
-            content=choice.message.content or "",
+            content=content,
             model=response.model,
             usage={
                 "prompt_tokens": response.usage.prompt_tokens if response.usage else 0,
@@ -237,8 +244,15 @@ class OpenAIClient(LLMClient):
             **kwargs,
         )
         async for chunk in stream:
-            if chunk.choices[0].delta.content:
-                yield chunk.choices[0].delta.content
+            delta = chunk.choices[0].delta if chunk.choices else None
+            if not delta:
+                continue
+            content = delta.content or ""
+            # 推理模型的回复可能在 reasoning_content 里
+            if not content and hasattr(delta, "reasoning_content") and delta.reasoning_content:
+                content = delta.reasoning_content
+            if content:
+                yield content
 
     async def _function_call_impl(
         self,
@@ -255,8 +269,11 @@ class OpenAIClient(LLMClient):
             **kwargs,
         )
         choice = response.choices[0]
+        content = choice.message.content or ""
+        if not content and hasattr(choice.message, "reasoning_content"):
+            content = choice.message.reasoning_content or ""
         return LLMResponse(
-            content=choice.message.content or "",
+            content=content,
             model=response.model,
             usage={
                 "prompt_tokens": response.usage.prompt_tokens if response.usage else 0,
@@ -274,7 +291,15 @@ class AnthropicClient(LLMClient):
         super().__init__(config)
         try:
             from anthropic import AsyncAnthropic
-            self.client = AsyncAnthropic(api_key=config.anthropic_api_key)
+            import os
+            kwargs: dict[str, Any] = {}
+            # api_key: config 显式设置 > 环境变量 ANTHROPIC_API_KEY
+            key = config.anthropic_api_key or os.environ.get("ANTHROPIC_API_KEY", "")
+            if key:
+                kwargs["api_key"] = key
+            if config.anthropic_base_url:
+                kwargs["base_url"] = config.anthropic_base_url
+            self.client = AsyncAnthropic(**kwargs)
         except ImportError:
             raise ImportError("请安装anthropic: pip install anthropic")
 
@@ -432,7 +457,7 @@ class LLMFactory:
     @classmethod
     def create(cls, config: LLMConfig) -> LLMClient:
         provider = config.provider
-        if provider == LLMProvider.LOCAL:
+        if provider in (LLMProvider.LOCAL, LLMProvider.MIMO):
             return OpenAIClient(config)
         client_class = cls._clients.get(provider)
         if client_class is None:

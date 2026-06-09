@@ -7,6 +7,7 @@ import sys
 import time
 from contextlib import contextmanager
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Generator
 from uuid import uuid4
 
@@ -37,9 +38,20 @@ def setup_logging(level: LogLevel = LogLevel.INFO, format: LogFormat = LogFormat
             getattr(logging, level.value)
         ),
         context_class=dict,
-        logger_factory=structlog.PrintLoggerFactory(),
+        logger_factory=structlog.PrintLoggerFactory(
+            file=open(sys.stdout.fileno(), mode="w", encoding="utf-8", buffering=1) if sys.platform == "win32" else sys.stdout,
+        ),
         cache_logger_on_first_use=True,
     )
+
+    # 文件日志
+    log_dir = Path(__file__).resolve().parents[2] / "logs"
+    log_dir.mkdir(exist_ok=True)
+    log_file = log_dir / "agentflow.log"
+    file_handler = logging.FileHandler(str(log_file), encoding="utf-8")
+    file_handler.setLevel(getattr(logging, level.value))
+    file_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+    logging.root.addHandler(file_handler)
 
 
 def get_logger(name: str) -> structlog.BoundLogger:

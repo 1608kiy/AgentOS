@@ -1,0 +1,6 @@
+E:\Dev\python\python.exe -m streamlit run src/agentflow/ui/app.py --server.port 8501
+演示步骤
+创建 Agent 时系统提示写：
+你是代码审查专家。用户会给你代码文件路径，你必须先用 file_reader 工具读取文件内容，然后从安全漏洞、代码质量、性能三个维度审查，给出严重程度和修复建议。
+对话输入：
+请审查 examples/demo_code_review.py，读取文件内容后进行安全审查

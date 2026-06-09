@@ -99,6 +99,31 @@ class AgentOrchestrator:
         result.duration_ms = duration
         return result
 
+    async def run_stream(self, task: str, agent_ids: list[str] | None = None):
+        """流式执行编排 — 逐步 yield 每个 Agent 的输出"""
+        import time
+        start_time = time.perf_counter()
+        agents = agent_ids or list(self.agents.keys())
+        current_input = task
+        final_output = ""
+
+        for agent_id in agents:
+            agent = self.agents.get(agent_id)
+            if not agent:
+                continue
+            agent_name = agent.name
+            yield f"[{agent_name}] 开始处理...\n"
+            full_chunk = ""
+            async for chunk in agent.stream_chat(current_input):
+                full_chunk += chunk
+                yield chunk
+            yield f"\n[{agent_name}] 完成\n\n"
+            current_input = full_chunk
+            final_output = full_chunk
+
+        duration = (time.perf_counter() - start_time) * 1000
+        yield f"\n--- 完成 ({duration:.0f}ms) ---"
+
     async def _run_sequential(self, agent_ids: list[str], task: str) -> OrchestrationResult:
         """串行执行 - Agent链"""
         result = OrchestrationResult(

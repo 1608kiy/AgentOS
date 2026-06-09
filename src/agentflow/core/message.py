@@ -24,17 +24,20 @@ class Message(BaseModel):
     role: MessageRole
     content: str
     name: str | None = None
+    tool_call_id: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     timestamp: datetime = Field(default_factory=datetime.now)
 
     def to_dict(self) -> dict[str, Any]:
         """转换为字典格式（用于LLM调用）"""
-        result = {
+        result: dict[str, Any] = {
             "role": self.role.value,
             "content": self.content,
         }
         if self.name:
             result["name"] = self.name
+        if self.role == MessageRole.TOOL and self.tool_call_id:
+            result["tool_call_id"] = self.tool_call_id
         return result
 
     @classmethod
@@ -53,9 +56,9 @@ class Message(BaseModel):
         return cls(role=MessageRole.ASSISTANT, content=content, **kwargs)
 
     @classmethod
-    def tool(cls, content: str, name: str | None = None, **kwargs: Any) -> Message:
+    def tool(cls, content: str, name: str | None = None, tool_call_id: str | None = None, **kwargs: Any) -> Message:
         """创建工具消息"""
-        return cls(role=MessageRole.TOOL, content=content, name=name, **kwargs)
+        return cls(role=MessageRole.TOOL, content=content, name=name, tool_call_id=tool_call_id, **kwargs)
 
 
 class ToolCall(BaseModel):
@@ -126,9 +129,9 @@ class ConversationHistory(BaseModel):
         self.messages.append(msg)
         return msg
 
-    def add_tool(self, content: str, name: str | None = None) -> Message:
+    def add_tool(self, content: str, name: str | None = None, tool_call_id: str | None = None) -> Message:
         """添加工具消息"""
-        msg = Message.tool(content, name=name)
+        msg = Message.tool(content, name=name, tool_call_id=tool_call_id)
         self.messages.append(msg)
         return msg
 

@@ -114,8 +114,8 @@ app = FastAPI(
     description="企业级多Agent协作平台API",
     version="0.2.0",
     lifespan=lifespan,
-    docs_url=None,
-    redoc_url=None,
+    docs_url="/docs",
+    redoc_url="/redoc",
 )
 
 # 增强API文档

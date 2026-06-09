@@ -259,6 +259,7 @@ class BaseAgent(ABC):
                     self.conversation.add_tool(
                         f"工具 {tool_call.name} 的结果:\n{result.content}",
                         name=tool_call.name,
+                        tool_call_id=tool_call.id,
                     )
                 else:
                     answer = await self._generate_answer()
@@ -338,9 +339,8 @@ class BaseAgent(ABC):
             decision = response.content.strip().upper()
             return "YES" in decision
         except Exception:
-            # 降级到关键词匹配
-            answer_keywords = ["答案", "结论", "总结", "回答", "answer", "conclusion", "summary"]
-            return any(kw in thought.lower() for kw in answer_keywords)
+            # 降级：如果思考内容足够长，认为已有足够信息
+            return len(thought) > 100
 
     async def _decide_action(self, thought: str) -> ToolCall | None:
         """决定执行的动作"""
@@ -421,8 +421,13 @@ class BaseAgent(ABC):
     async def stream_chat(self, message: str):
         self.conversation.add_user(message)
         messages = self.conversation.get_messages()
+        full_response = ""
         async for chunk in self.llm.stream_chat(messages):
+            full_response += chunk
             yield chunk
+        # 保存完整回复到对话历史
+        if full_response:
+            self.conversation.add_assistant(full_response)
 
     def reset(self) -> None:
         self.state.reset()

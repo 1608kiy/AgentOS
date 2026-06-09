@@ -431,13 +431,23 @@ class WorkflowEngine:
         if not next_ids:
             return {"parallel_tasks": [], "status": "no_tasks"}
 
-        tasks = []
-        for next_id in next_ids:
-            next_node = context  # placeholder
-            # 并行执行不需要在这里处理，由主循环处理
-            tasks.append({"node_id": next_id, "status": "queued"})
+        async def run_child(child_id: str) -> dict[str, Any]:
+            child_node = context.workflow_def.get_node(child_id) if hasattr(context, "workflow_def") else None
+            if not child_node:
+                return {"node_id": child_id, "status": "not_found"}
+            result = await self._execute_node(child_node, context)
+            context.update(child_id, result)
+            return {"node_id": child_id, "status": result.status.value, "output": result.output}
 
-        return {"parallel_tasks": tasks, "status": "queued"}
+        results = await asyncio.gather(*[run_child(nid) for nid in next_ids], return_exceptions=True)
+        outputs = []
+        for r in results:
+            if isinstance(r, Exception):
+                outputs.append({"status": "error", "error": str(r)})
+            else:
+                outputs.append(r)
+
+        return {"parallel_tasks": outputs, "status": "completed"}
 
     async def _wait_for_human(self, node: WorkflowNode, context: WorkflowContext) -> NodeResult:
         """等待人工输入"""
