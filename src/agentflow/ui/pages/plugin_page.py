@@ -8,7 +8,7 @@ from agentflow.core.plugins import plugin_manager, auto_load_plugins
 
 
 def render_plugin_page():
-    st.markdown("### 🔌 插件管理")
+    st.markdown("### 插件管理")
 
     tab1, tab2 = st.tabs(["已安装插件", "插件目录"])
 
@@ -18,11 +18,11 @@ def render_plugin_page():
         if not plugins:
             if st.button("加载内置插件"):
                 count = auto_load_plugins()
-                st.success(f"✅ 已加载 {count} 个插件")
+                st.success(f"已加载 {count} 个插件")
                 st.rerun()
 
         for meta in plugins:
-            with st.expander(f"{'✅' if meta.enabled else '⏸️'} {meta.name} v{meta.version}"):
+            with st.expander(f"{'[ON]' if meta.enabled else '[OFF]'} {meta.name} v{meta.version}"):
                 col1, col2 = st.columns([3, 1])
                 with col1:
                     st.markdown(f"**类型:** {meta.plugin_type}")

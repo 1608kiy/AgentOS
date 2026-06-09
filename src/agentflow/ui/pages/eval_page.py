@@ -19,7 +19,7 @@ from agentflow.core.evaluation import (
 
 
 def render_eval_page():
-    st.markdown("### 🧪 Agent 评估")
+    st.markdown("### Agent 评估")
 
     tab1, tab2, tab3 = st.tabs(["运行评估", "基准测试集", "历史报告"])
 
@@ -62,7 +62,7 @@ def _render_run_eval():
 
         parallel = st.checkbox("并行执行", value=False)
 
-        if st.button("🚀 开始评估", use_container_width=True, type="primary"):
+        if st.button("开始评估", use_container_width=True, type="primary"):
             agent = agents[agent_id]
 
             if suite_name == "自定义":
@@ -90,7 +90,7 @@ def _render_run_eval():
                 report = loop.run_until_complete(runner.run_suite(tasks))
 
             st.session_state.eval_report = report
-            st.success(f"✅ 评估完成！通过率: {report.pass_rate:.0%}")
+            st.success(f"评估完成! 通过率: {report.pass_rate:.0%}")
 
     with col2:
         st.markdown("#### 评估结果")
@@ -122,7 +122,7 @@ def _render_report(report):
     df = pd.DataFrame([
         {
             "任务": r.task_name,
-            "通过": "✅" if r.passed else "❌",
+                "通过": "Y" if r.passed else "N",
             "分数": f"{r.score:.2f}",
             "耗时(ms)": f"{r.duration_ms:.0f}",
             "迭代": r.iterations,
@@ -139,10 +139,10 @@ def _render_report(report):
 
 
 def _render_benchmark():
-    st.markdown("#### 📚 基准测试集")
+    st.markdown("#### 基准测试集")
 
     for suite_name, tasks in BENCHMARK_TASKS.items():
-        with st.expander(f"📋 {suite_name} ({len(tasks)}个任务)"):
+            with st.expander(f"{suite_name} ({len(tasks)}个任务)"):
             for task in tasks:
                 st.markdown(f"**{task.name}**")
                 st.caption(f"输入: {task.input}")
@@ -151,7 +151,7 @@ def _render_benchmark():
 
 
 def _render_history():
-    st.markdown("#### 📊 历史评估报告")
+    st.markdown("#### 历史评估报告")
     report = st.session_state.get("eval_report")
     if report:
         st.json(report.model_dump())

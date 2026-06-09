@@ -32,7 +32,7 @@ from agentflow.workflow.orchestrator import AgentOrchestrator, OrchestrationStra
 # ============ 页面配置 ============
 st.set_page_config(
     page_title="AgentFlow",
-    page_icon="⚡",
+    page_icon="A",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -547,7 +547,7 @@ def chat_page():
 
         # 新手引导
         if not messages:
-            st.info("👋 欢迎使用 AgentFlow！\n\n1. 在左侧创建一个 Agent\n2. 在下方输入框输入任务\n3. 开始对话")
+            st.info("欢迎使用 AgentFlow！\n\n1. 在左侧创建一个 Agent\n2. 在下方输入框输入任务\n3. 开始对话")
 
         # 聊天历史
         chat_container = st.container(height=400)
@@ -578,7 +578,7 @@ def chat_page():
 
             agents = list(st.session_state.agents.values())
             if not agents:
-                st.warning("⚠️ 请先在左侧创建至少一个Agent")
+                st.warning("请先在左侧创建至少一个Agent")
                 return
 
             with chat_container:
@@ -694,7 +694,7 @@ def chat_page():
                         _save_conversations()
 
     with col2:
-        st.markdown("### 📊 实时状态")
+        st.markdown("### 实时状态")
 
         # 实时指标
         agents = list(st.session_state.agents.values())
@@ -723,10 +723,10 @@ def chat_page():
         """, unsafe_allow_html=True)
 
         # 最近执行日志
-        st.markdown("#### 📝 最近执行")
+        st.markdown("#### 最近执行")
         if st.session_state.execution_log:
             for log in st.session_state.execution_log[-5:][::-1]:
-                icon = "✅" if log["status"] == "success" else "❌"
+                icon = "+" if log["status"] == "success" else "-"
                 ms = log.get("duration_ms", 0)
                 st.caption(f"{icon} {log['task']} ({ms}ms)")
         else:
@@ -735,9 +735,9 @@ def chat_page():
 
 # ============ 工作流设计器页面 ============
 def workflow_page():
-    st.markdown("### 🔧 工作流设计器")
+    st.markdown("### 工作流设计器")
 
-    tab1, tab2, tab3 = st.tabs(["🎨 可视化设计", "🧩 模板库", "📝 JSON定义"])
+    tab1, tab2, tab3 = st.tabs(["可视化设计", "模板库", "JSON定义"])
 
     with tab1:
         from agentflow.ui.components.workflow_designer import render_workflow_designer
@@ -745,19 +745,19 @@ def workflow_page():
         render_workflow_designer(height=500)
 
     with tab2:
-        st.markdown("#### 🧩 工作流模板")
+        st.markdown("#### 工作流模板")
 
         col1, col2, col3 = st.columns(3)
         with col1:
-            st.markdown("""<div class="agent-card"><div class="agent-name">🎯 智能客服</div><div class="agent-type">意图识别 → 路由 → 处理 → 总结</div></div>""", unsafe_allow_html=True)
+            st.markdown("""<div class="agent-card"><div class="agent-name">智能客服</div><div class="agent-type">意图识别 → 路由 → 处理 → 总结</div></div>""", unsafe_allow_html=True)
             if st.button("使用此模板", key="tpl_cs"):
                 _create_customer_service_workflow()
         with col2:
-            st.markdown("""<div class="agent-card"><div class="agent-name">🔍 代码审查</div><div class="agent-type">安全 → 质量 → 性能 → 评审</div></div>""", unsafe_allow_html=True)
+            st.markdown("""<div class="agent-card"><div class="agent-name">代码审查</div><div class="agent-type">安全 → 质量 → 性能 → 评审</div></div>""", unsafe_allow_html=True)
             if st.button("使用此模板", key="tpl_cr"):
                 _create_code_review_workflow()
         with col3:
-            st.markdown("""<div class="agent-card"><div class="agent-name">📊 数据分析</div><div class="agent-type">规划 → 分析 → 报告</div></div>""", unsafe_allow_html=True)
+            st.markdown("""<div class="agent-card"><div class="agent-name">数据分析</div><div class="agent-type">规划 → 分析 → 报告</div></div>""", unsafe_allow_html=True)
             if st.button("使用此模板", key="tpl_da"):
                 _create_data_analysis_workflow()
 
@@ -765,7 +765,7 @@ def workflow_page():
         st.markdown("#### 已创建工作流")
         if st.session_state.workflows:
             for wf_id, wf in st.session_state.workflows.items():
-                with st.expander(f"📋 {wf.name} — {wf.description}"):
+                with st.expander(f"{wf.name} — {wf.description}"):
                     st.json(wf.to_dict())
                     exec_key = f"exec_wf_{wf_id}"
                     task_input = st.text_input("输入任务", key=f"task_{wf_id}", placeholder="描述工作流要处理的任务...")
@@ -780,12 +780,12 @@ def workflow_page():
                                         st.session_state.workflow_engine.execute(wf, {"task": task_input})
                                     )
                                     if result.status == "completed":
-                                        st.success("✅ 执行完成")
+                                        st.success("执行完成")
                                     else:
-                                        st.error(f"❌ 执行失败: {result.status}")
+                                        st.error(f"执行失败: {result.status}")
                                     st.json({k: v.model_dump() if hasattr(v, 'model_dump') else str(v) for k, v in result.node_results.items()})
                                 except Exception as e:
-                                    st.error(f"❌ {e}")
+                                    st.error(f"{e}")
         else:
             st.info("暂无工作流，请使用上方模板创建")
 
@@ -800,9 +800,9 @@ def workflow_page():
             try:
                 import json
                 data = json.loads(wf_json)
-                st.success("✅ 解析成功")
+                st.success("解析成功")
             except Exception as e:
-                st.error(f"❌ JSON解析错误: {e}")
+                st.error(f"JSON解析错误: {e}")
 
 
 def _create_customer_service_workflow():
@@ -951,7 +951,7 @@ def monitoring_page():
     col1, col2 = st.columns(2)
 
     with col1:
-        st.markdown("#### 📈 Agent Token用量")
+        st.markdown("#### Agent Token用量")
         if total_tokens:
             try:
                 import plotly.express as px
@@ -970,7 +970,7 @@ def monitoring_page():
             st.info("暂无数据")
 
     with col2:
-        st.markdown("#### 📉 执行历史")
+        st.markdown("#### 执行历史")
         if st.session_state.execution_log:
             try:
                 import plotly.express as px
@@ -994,7 +994,7 @@ def monitoring_page():
 
     # 执行状态分布
     if st.session_state.execution_log:
-        st.markdown("#### 📊 执行状态分布")
+        st.markdown("#### 执行状态分布")
         try:
             import plotly.express as px
             import pandas as pd
@@ -1010,7 +1010,7 @@ def monitoring_page():
 
     # Agent详情
     st.markdown("---")
-    st.markdown("#### 🤖 Agent 状态详情")
+    st.markdown("#### Agent 状态详情")
 
     if agents:
         for agent in agents:
@@ -1038,7 +1038,7 @@ def main():
     render_sidebar()
 
     tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-        "💬 对话", "🔧 工作流", "📊 监控", "🧪 评估", "🔌 插件", "⚙️ 设置"
+        "对话", "工作流", "监控", "评估", "插件", "设置"
     ])
 
     with tab1:

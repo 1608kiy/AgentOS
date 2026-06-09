@@ -60,7 +60,7 @@ def _save_env_file(updates: dict[str, str]) -> None:
 
 
 def render_settings_page() -> None:
-    st.markdown("### ⚙️ API 设置")
+    st.markdown("### API 设置")
     st.caption("配置 LLM API Key，创建 Agent 时自动使用。配置会保存到项目根目录 `.env` 文件。")
 
     env = _load_env_file()
@@ -138,7 +138,7 @@ def render_settings_page() -> None:
 
     st.markdown("---")
 
-    if st.button("💾 保存配置", type="primary", use_container_width=True):
+    if st.button("保存配置", type="primary", use_container_width=True):
         updates: dict[str, str] = {
             "LLM_PROVIDER": provider,
             "LLM_MODEL": model,
@@ -160,9 +160,9 @@ def render_settings_page() -> None:
 
         try:
             _save_env_file(updates)
-            st.success("✅ 配置已保存到 .env 文件")
+            st.success("配置已保存到 .env 文件")
         except Exception as e:
-            st.error(f"❌ 保存失败: {e}")
+            st.error(f"保存失败: {e}")
 
         # 同步到 session state
         st.session_state["settings_provider"] = provider
@@ -181,20 +181,20 @@ def render_settings_page() -> None:
     if provider == "mimo":
         key = st.session_state.get("settings_mimo_key", env.get("LLM_API_KEY", ""))
         if key:
-            st.success(f"✅ MiMo 已连接 (***{key[-4:]})  模型: {model}")
+            st.success(f"MiMo 已连接 (***{key[-4:]})  模型: {model}")
         else:
-            st.warning("⚠️ 未配置 MiMo API Key")
+            st.warning("未配置 MiMo API Key")
     elif provider == "openai":
         key = st.session_state.get("settings_openai_key", env.get("LLM_API_KEY", ""))
         if key:
-            st.success(f"✅ OpenAI 已连接 (***{key[-4:]})")
+            st.success(f"OpenAI 已连接 (***{key[-4:]})")
         else:
-            st.warning("⚠️ 未配置 OpenAI API Key")
+            st.warning("未配置 OpenAI API Key")
     elif provider == "anthropic":
         key = st.session_state.get("settings_anthropic_key", env.get("ANTHROPIC_API_KEY", ""))
         if key:
-            st.success(f"✅ Anthropic 已连接 (***{key[-4:]})")
+            st.success(f"Anthropic 已连接 (***{key[-4:]})")
         else:
-            st.warning("⚠️ 未配置 Anthropic API Key")
+            st.warning("未配置 Anthropic API Key")
     elif provider == "local":
-        st.info(f"🏠 本地模型: {base_url}")
+            st.info(f"本地模型: {base_url}")
