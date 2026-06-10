@@ -251,3 +251,117 @@ async def test_workflow_condition_skips_branch():
     # true 分支执行，false 分支被跳过
     assert context.node_results[pass_node.id].status == NodeStatus.COMPLETED
     assert context.node_results[fail_node.id].status == NodeStatus.SKIPPED
+
+
+# ============ YAML/JSON 工作流定义测试 ============
+
+def test_workflow_from_dict():
+    """测试从字典创建工作流"""
+    from agentflow.workflow.engine import WorkflowBuilder, NodeType
+
+    data = {
+        "name": "test_flow",
+        "description": "测试工作流",
+        "nodes": [
+            {"name": "start", "type": "agent", "config": {"agent_type": "planner", "task": "规划"}},
+            {"name": "calc", "type": "tool", "config": {"tool_name": "calculator", "arguments": {"expression": "1+1"}}},
+        ],
+        "edges": [{"from": "start", "to": "calc"}],
+        "entry": "start",
+        "exit": ["calc"],
+    }
+    wf = WorkflowBuilder.from_dict(data)
+    assert wf.name == "test_flow"
+    assert len(wf.nodes) == 2
+    assert len(wf.edges) == 1
+    assert wf.validate() == []
+
+
+def test_workflow_from_json_string():
+    """测试从 JSON 字符串创建工作流"""
+    import json
+    from agentflow.workflow.engine import WorkflowBuilder
+
+    data = {
+        "name": "json_flow",
+        "nodes": [
+            {"name": "a", "type": "tool", "config": {"tool_name": "calculator"}},
+            {"name": "b", "type": "tool", "config": {"tool_name": "calculator"}},
+        ],
+        "edges": [{"from": "a", "to": "b"}],
+        "entry": "a",
+        "exit": ["b"],
+    }
+    wf = WorkflowBuilder.from_json(json.dumps(data))
+    assert wf.name == "json_flow"
+    assert len(wf.nodes) == 2
+
+
+def test_workflow_from_json_file(tmp_path):
+    """测试从 JSON 文件创建工作流"""
+    import json
+    from agentflow.workflow.engine import WorkflowBuilder
+
+    data = {
+        "name": "file_flow",
+        "nodes": [{"name": "x", "type": "start"}],
+        "edges": [],
+        "entry": "x",
+        "exit": ["x"],
+    }
+    path = tmp_path / "wf.json"
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+    wf = WorkflowBuilder.from_json(str(path))
+    assert wf.name == "file_flow"
+
+
+def test_workflow_from_yaml_string():
+    """测试从 YAML 字符串创建工作流"""
+    from agentflow.workflow.engine import WorkflowBuilder
+
+    yaml_str = """
+name: yaml_flow
+description: YAML 工作流
+nodes:
+  - name: step1
+    type: agent
+    config:
+      agent_type: planner
+      task: 分析任务
+  - name: step2
+    type: tool
+    config:
+      tool_name: calculator
+      arguments:
+        expression: "6*7"
+edges:
+  - from: step1
+    to: step2
+entry: step1
+exit:
+  - step2
+"""
+    wf = WorkflowBuilder.from_yaml(yaml_str)
+    assert wf.name == "yaml_flow"
+    assert len(wf.nodes) == 2
+    assert len(wf.edges) == 1
+    # 验证节点配置正确
+    n1 = wf.get_node_by_name("step1")
+    assert n1.config["agent_type"] == "planner"
+    n2 = wf.get_node_by_name("step2")
+    assert n2.config["tool_name"] == "calculator"
+
+
+def test_workflow_from_dict_unknown_type():
+    """测试未知节点类型报错"""
+    from agentflow.workflow.engine import WorkflowBuilder
+
+    data = {
+        "name": "bad",
+        "nodes": [{"name": "x", "type": "unknown_xyz"}],
+        "entry": "x",
+        "exit": ["x"],
+    }
+    with pytest.raises(ValueError, match="未知节点类型"):
+        WorkflowBuilder.from_dict(data)

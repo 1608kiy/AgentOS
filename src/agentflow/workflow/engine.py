@@ -613,3 +613,89 @@ class WorkflowBuilder:
 
     def build(self) -> WorkflowDefinition:
         return self.workflow
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> WorkflowDefinition:
+        """从字典创建工作流（支持 JSON/YAML 解析后的结构）。
+
+        格式示例::
+
+            name: code_review
+            description: "代码审查流程"
+            nodes:
+              - name: review
+                type: agent
+                config:
+                  agent_type: reviewer
+                  task: "审查代码"
+              - name: calc
+                type: tool
+                config:
+                  tool_name: calculator
+                  arguments:
+                    expression: "2+3"
+            edges:
+              - from: review
+                to: calc
+            entry: review
+            exit: [calc]
+        """
+        name = data.get("name", "unnamed")
+        desc = data.get("description", "")
+        builder = cls(name, desc)
+
+        _TYPE_MAP = {t.value: t for t in NodeType}
+
+        for node_def in data.get("nodes", []):
+            node_name = node_def["name"]
+            node_type_str = node_def.get("type", "agent")
+            node_type = _TYPE_MAP.get(node_type_str)
+            if node_type is None:
+                raise ValueError(f"未知节点类型: {node_type_str}，可选: {list(_TYPE_MAP.keys())}")
+            config = node_def.get("config", {})
+            builder.add_node(node_name, node_type, config)
+
+        for edge_def in data.get("edges", []):
+            builder.connect(edge_def["from"], edge_def["to"], edge_def.get("condition"))
+
+        entry = data.get("entry")
+        if entry:
+            builder.set_entry(entry)
+
+        for exit_node in data.get("exit", []):
+            builder.set_exit(exit_node)
+
+        return builder.build()
+
+    @classmethod
+    def from_json(cls, source: str) -> WorkflowDefinition:
+        """从 JSON 字符串或文件路径创建工作流。
+
+        Args:
+            source: JSON 字符串，或以 .json 结尾的文件路径。
+        """
+        import json as _json
+        from pathlib import Path
+
+        if source.endswith(".json") and Path(source).is_file():
+            source = Path(source).read_text(encoding="utf-8")
+        data = _json.loads(source)
+        return cls.from_dict(data)
+
+    @classmethod
+    def from_yaml(cls, source: str) -> WorkflowDefinition:
+        """从 YAML 字符串或文件路径创建工作流。
+
+        Args:
+            source: YAML 字符串，或以 .yaml/.yml 结尾的文件路径。
+        """
+        try:
+            import yaml
+        except ImportError:
+            raise ImportError("请安装 pyyaml: pip install pyyaml")
+        from pathlib import Path
+
+        if (source.endswith(".yaml") or source.endswith(".yml")) and Path(source).is_file():
+            source = Path(source).read_text(encoding="utf-8")
+        data = yaml.safe_load(source)
+        return cls.from_dict(data)
