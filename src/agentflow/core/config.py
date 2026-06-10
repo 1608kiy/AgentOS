@@ -25,6 +25,8 @@ class LLMProvider(str, Enum):
     MIMO = "mimo"
     DEEPSEEK = "deepseek"
     GEMINI = "gemini"
+    QWEN = "qwen"
+    ZHIPU = "zhipu"
 
 
 class LogLevel(str, Enum):

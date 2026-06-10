@@ -15,7 +15,7 @@ from agentflow.core.message import Message
 # ============ Provider Enum ============
 
 def test_all_providers_present():
-    expected = {"openai", "anthropic", "local", "mimo", "deepseek", "gemini"}
+    expected = {"openai", "anthropic", "local", "mimo", "deepseek", "gemini", "qwen", "zhipu"}
     actual = {p.value for p in LLMProvider}
     assert expected == actual
 
@@ -58,6 +58,20 @@ def test_factory_routes_deepseek_preserves_custom_base_url():
     cfg = LLMConfig(provider=LLMProvider.DEEPSEEK, api_key="test", openai_base_url="https://custom/v1")
     client = LLMFactory.create(cfg)
     assert cfg.openai_base_url == "https://custom/v1"
+
+
+def test_factory_routes_qwen_with_default_base_url():
+    cfg = LLMConfig(provider=LLMProvider.QWEN, api_key="test-key", openai_base_url="")
+    client = LLMFactory.create(cfg)
+    assert type(client).__name__ == "OpenAIClient"
+    assert "dashscope" in cfg.openai_base_url
+
+
+def test_factory_routes_zhipu_with_default_base_url():
+    cfg = LLMConfig(provider=LLMProvider.ZHIPU, api_key="test-key", openai_base_url="")
+    client = LLMFactory.create(cfg)
+    assert type(client).__name__ == "OpenAIClient"
+    assert "bigmodel" in cfg.openai_base_url
 
 
 def test_factory_raises_on_unknown_provider():

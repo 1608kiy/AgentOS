@@ -465,9 +465,16 @@ class LLMFactory:
         if provider in (LLMProvider.LOCAL, LLMProvider.MIMO):
             return OpenAIClient(config)
         if provider == LLMProvider.DEEPSEEK:
-            # DeepSeek 兼容 OpenAI 协议，用专用 base_url
             if not config.openai_base_url:
                 config.openai_base_url = "https://api.deepseek.com/v1"
+            return OpenAIClient(config)
+        if provider == LLMProvider.QWEN:
+            if not config.openai_base_url:
+                config.openai_base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+            return OpenAIClient(config)
+        if provider == LLMProvider.ZHIPU:
+            if not config.openai_base_url:
+                config.openai_base_url = "https://open.bigmodel.cn/api/paas/v4"
             return OpenAIClient(config)
         if provider == LLMProvider.GEMINI:
             return GeminiClient(config)
