@@ -142,7 +142,7 @@ def _render_benchmark():
     st.markdown("#### 基准测试集")
 
     for suite_name, tasks in BENCHMARK_TASKS.items():
-            with st.expander(f"{suite_name} ({len(tasks)}个任务)"):
+        with st.expander(f"{suite_name} ({len(tasks)}个任务)"):
             for task in tasks:
                 st.markdown(f"**{task.name}**")
                 st.caption(f"输入: {task.input}")

@@ -43,27 +43,31 @@ LangGraph很好，但作为学习项目，自己实现能更深入理解：
 - 状态机的流转控制
 - 并行执行的asyncio编排
 
-#### 2. ReAct模式的实现
+#### 2. 原生 tool-calling 单循环
+
+每轮迭代只做**一次** LLM 调用：模型自主决定「调用工具」或「给出答案」，无需额外的 think/decide 调用。
 
 ```python
 async def run(self, task: str) -> AgentResponse:
-    for iteration in range(self.max_iterations):
-        # 1. Think
-        thought = await self._think()
+    for _ in range(self.max_iterations):
+        # 单次 LLM 调用：有工具就用原生 function-calling，否则普通对话
+        response = await self._step()
 
-        # 2. Decide - 用LLM判断是否该回答
-        if await self._should_answer(thought):
-            return await self._generate_answer()
+        tool_calls = [self._parse_tool_call(tc) for tc in response.tool_calls]
+        tool_calls = [tc for tc in tool_calls if tc is not None]
 
-        # 3. Act
-        tool_call = await self._decide_action(thought)
-        if tool_call:
-            result = await self._execute_tool(tool_call)
-            # 4. Observe - 结果加入对话
-            self.conversation.add_tool(result.content)
+        if tool_calls:
+            # 执行所有工具，结果回灌对话继续循环
+            for tool_call in tool_calls:
+                result = await self._execute_tool(tool_call)
+                self.conversation.add_user(f"[{tool_call.name} result]\n{result.content}")
+            continue
+
+        # 没有工具调用 → 最终答案
+        return AgentResponse(content=response.content, ...)
 ```
 
-关键改进：`_should_answer`不用关键词匹配，而是让LLM自己判断。
+相比旧版 think→should_answer→decide→answer 的 3-4 次调用，速度与成本降低约 3-4 倍，且决策更连贯。
 
 #### 3. 工作流引擎的节点注入
 
@@ -116,29 +120,38 @@ async def _retry_with_backoff(self, func, *args, **kwargs):
 
 - 指数退避：1s → 2s → 4s
 - 可重试状态码：429, 500, 502, 503
-- LRU缓存避免重复调用
+- 可选 LRU 缓存（默认关闭，避免 Agent 循环中误命中）
 
-### 2. 沙箱化代码执行
+### 2. 沙箱化代码执行（AST 静态分析 + subprocess 隔离）
 
 ```python
 class CodeExecutorTool(Tool):
-    _BLOCKED = frozenset(["os.system", "subprocess", "__import__", ...])
+    _BLOCKED_MODULES = frozenset(["os", "subprocess", "shutil", ...])
+    _BLOCKED_CALLS = frozenset(["eval", "exec", "open", "getattr", ...])
+
+    def _check_ast(self, code: str) -> str | None:
+        """AST 静态分析：从语法层面拦截危险操作"""
+        for node in ast.walk(ast.parse(code)):
+            if isinstance(node, ast.Import):
+                if node.names[0].name.split(".")[0] in self._BLOCKED_MODULES:
+                    return "安全拒绝"
+            elif isinstance(node, ast.Call):
+                if isinstance(node.func, ast.Name) and node.func.id in self._BLOCKED_CALLS:
+                    return "安全拒绝"
+            elif isinstance(node, ast.Attribute):
+                if node.attr.startswith("__"):  # 拦截 __bases__ 等 dunder 逃逸
+                    return "安全拒绝"
 
     async def execute(self, code, timeout=10):
-        # 预检查
-        for blocked in self._BLOCKED:
-            if blocked in code.lower():
-                return f"安全拒绝: {blocked}"
-
-        # subprocess隔离执行
+        if rejection := self._check_ast(code):
+            return rejection
         proc = subprocess.run(
-            [sys.executable, "-c", code],
-            capture_output=True, timeout=timeout,
-            env={},  # 清空环境变量
+            [sys.executable, "-I", "-c", code],  # -I 隔离模式
+            capture_output=True, timeout=timeout, env={"PATH": ""},
         )
 ```
 
-三层防护：黑名单检查 → subprocess隔离 → 超时控制。
+三层纵深防御：AST 静态分析（拦截 import/dunder/getattr 绕过）→ subprocess `-I` 隔离 + 空环境变量 → 超时控制。
 
 ### 3. 评估框架
 
@@ -179,7 +192,7 @@ tests/
     └── test_api.py
 ```
 
-99个测试，覆盖所有核心模块。
+123个测试（0 failed, 0 warnings），覆盖所有核心模块。
 
 ## 性能基准
 
@@ -223,7 +236,7 @@ AgentFlow不是一个"又一个ChatGPT wrapper"，而是一个**从零构建的�
 
 1. **自己实现核心引擎** — 不依赖LangChain
 2. **企业级特性完整** — 认证、日志、监控、评估
-3. **代码质量高** — 99个测试、类型注解、文档完整
+3. **代码质量高** — 123个测试、类型注解、文档完整
 4. **可扩展性强** — 插件系统、中间件、工具注册
 
 项目地址：[github.com/1608kiy/AgentOS](https://github.com/1608kiy/AgentOS)
