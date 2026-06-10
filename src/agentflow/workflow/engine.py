@@ -160,6 +160,10 @@ class WorkflowContext(BaseModel):
     started_at: datetime = Field(default_factory=datetime.now)
     completed_at: datetime | None = None
     human_inputs: dict[str, Any] = Field(default_factory=dict)
+    # 边状态: "from_id->to_id" -> pending|activated|skipped（用于 DAG 调度与 resume 恢复）
+    edge_states: dict[str, str] = Field(default_factory=dict)
+    # 正在等待人工输入的节点 id（用于 resume 定位）
+    waiting_node: str | None = None
 
     def update(self, node_id: str, result: NodeResult) -> None:
         self.node_results[node_id] = result
@@ -220,19 +224,25 @@ class DefaultNodeExecutor:
 
 
 class WorkflowEngine:
-    """工作流执行引擎"""
+    """工作流执行引擎 - 真正的 DAG 调度器
+
+    通过节点入度 + 边状态驱动执行：每轮收集所有「就绪」节点（其所有入边都已确定）
+    并发执行，支持 fan-out（一对多）、fan-in（多入边汇聚）、条件分支跳过传播，
+    以及 human 节点暂停 / resume 恢复。
+    """
 
     def __init__(self, executor: DefaultNodeExecutor | None = None):
         self.executor = executor or DefaultNodeExecutor()
         self.running_workflows: dict[str, WorkflowContext] = {}
-        self._paused_workflows: dict[str, asyncio.Event] = {}
+        # 保存 workflow 定义引用，供 resume 与并行子节点访问
+        self._workflows: dict[str, WorkflowDefinition] = {}
 
     async def execute(
         self,
         workflow: WorkflowDefinition,
         inputs: dict[str, Any] | None = None,
     ) -> WorkflowContext:
-        """执行工作流"""
+        """执行工作流（DAG 调度）"""
         errors = workflow.validate()
         if errors:
             raise ValueError(f"工作流验证失败: {errors}")
@@ -243,40 +253,73 @@ class WorkflowEngine:
             variables=dict(inputs or {}),
         )
         self.running_workflows[context.id] = context
+        self._workflows[context.id] = workflow
 
+        return await self._drive(workflow, context)
+
+    async def resume(self, context_id: str, human_input: Any) -> WorkflowContext:
+        """恢复等待人工输入的工作流，从暂停点继续 DAG 调度。"""
+        context = self.running_workflows.get(context_id)
+        workflow = self._workflows.get(context_id)
+        if not context or workflow is None or context.status != "waiting":
+            raise ValueError(f"工作流不存在或不在等待状态: {context_id}")
+
+        # 完成等待中的 human 节点
+        waiting_id = context.waiting_node
+        if waiting_id and waiting_id in context.node_results:
+            result = context.node_results[waiting_id]
+            result.status = NodeStatus.COMPLETED
+            result.output = human_input
+            result.completed_at = datetime.now()
+            context.update(waiting_id, result)
+            context.human_inputs[waiting_id] = human_input
+            context.set_variable("human_input", human_input)
+            # 激活该节点的出边，使后继节点进入就绪队列
+            self._propagate(workflow, context, waiting_id, result)
+
+        context.waiting_node = None
+        context.status = "running"
+        return await self._drive(workflow, context)
+
+    async def _drive(self, workflow: WorkflowDefinition, context: WorkflowContext) -> WorkflowContext:
+        """DAG 主调度循环：反复执行所有就绪节点，直到无可执行节点或进入等待。"""
         try:
-            current_id = workflow.entry_node
-            first_node = True
-
-            while current_id:
-                node = workflow.get_node(current_id)
-                if not node:
+            while True:
+                ready = self._ready_nodes(workflow, context)
+                if not ready:
                     break
 
-                # 执行当前节点
-                result = await self._execute_node(node, context)
-                context.update(current_id, result)
+                # 并发执行本轮所有就绪节点
+                results = await asyncio.gather(
+                    *[self._execute_node(node, context) for node in ready]
+                )
 
-                if result.status == NodeStatus.FAILED:
-                    context.status = "failed"
-                    context.outputs["error"] = result.error
-                    break
-                elif result.status == NodeStatus.WAITING:
-                    context.status = "waiting"
-                    self.running_workflows[context.id] = context
+                paused = False
+                for node, result in zip(ready, results):
+                    context.update(node.id, result)
+
+                    if result.status == NodeStatus.WAITING:
+                        context.status = "waiting"
+                        context.waiting_node = node.id
+                        paused = True
+                        continue
+
+                    if result.status == NodeStatus.FAILED:
+                        context.status = "failed"
+                        context.outputs["error"] = result.error
+                        self.running_workflows.pop(context.id, None)
+                        return context
+
+                    # 激活/跳过出边，驱动后继节点
+                    self._propagate(workflow, context, node.id, result)
+
+                if paused:
+                    # 保留在 running_workflows 中，等待 resume
                     return context
-
-                # 如果当前节点是出口节点，执行完后结束
-                if current_id in workflow.exit_nodes:
-                    break
-
-                current_id = self._get_next_node(node, result, workflow)
-                first_node = False
 
             if context.status == "running":
                 context.status = "completed"
                 context.completed_at = datetime.now()
-                # 收集所有出口节点的输出
                 for exit_id in workflow.exit_nodes:
                     if exit_id in context.node_results:
                         context.outputs[exit_id] = context.node_results[exit_id].output
@@ -285,37 +328,93 @@ class WorkflowEngine:
             context.status = "failed"
             context.outputs["error"] = str(e)
         finally:
-            if context.status != "waiting":
+            if context.status not in ("waiting",):
                 self.running_workflows.pop(context.id, None)
 
         return context
 
-    async def resume(self, context_id: str, human_input: Any) -> WorkflowContext:
-        """恢复等待中的工作流"""
-        context = self.running_workflows.get(context_id)
-        if not context or context.status != "waiting":
-            raise ValueError(f"工作流不存在或不在等待状态: {context_id}")
+    def _incoming_edges(self, workflow: WorkflowDefinition, node_id: str) -> list[WorkflowEdge]:
+        """节点的所有入边（兼容仅用 next_nodes 构建、未显式登记 edges 的工作流）。"""
+        edges = [e for e in workflow.edges if e.to_node == node_id]
+        if edges:
+            return edges
+        # 回退：从 next_nodes 推断入边
+        inferred: list[WorkflowEdge] = []
+        for n in workflow.nodes:
+            if node_id in n.next_nodes:
+                inferred.append(WorkflowEdge(from_node=n.id, to_node=node_id))
+        return inferred
 
-        context.status = "running"
-        context.human_inputs[context_id] = human_input
-        context.set_variable("human_input", human_input)
+    def _ready_nodes(self, workflow: WorkflowDefinition, context: WorkflowContext) -> list[WorkflowNode]:
+        """收集就绪节点：未执行过、且所有入边状态均已确定（activated/skipped）。
 
-        # 找到等待中的节点，继续执行
-        for node_id, result in context.node_results.items():
-            if result.status == NodeStatus.WAITING:
-                result.status = NodeStatus.COMPLETED
-                result.output = human_input
-                result.completed_at = datetime.now()
-                context.update(node_id, result)
-                break
+        - 入口节点无入边，首次即就绪。
+        - fan-in 节点需等待全部入边确定；只要有一条 activated 边即执行，全 skipped 则跳过。
+        """
+        ready: list[WorkflowNode] = []
+        for node in workflow.nodes:
+            if node.id in context.node_results:
+                continue  # 已执行
 
-        # 继续执行后续节点
-        workflow_def = None  # 需要从外部传入workflow定义
-        # 这里简化处理，实际需要保存workflow引用
-        context.status = "completed"
-        context.completed_at = datetime.now()
-        self.running_workflows.pop(context_id, None)
-        return context
+            incoming = self._incoming_edges(workflow, node.id)
+
+            # 入口节点
+            if not incoming:
+                if node.id == workflow.entry_node:
+                    ready.append(node)
+                continue
+
+            edge_states = [
+                context.edge_states.get(f"{e.from_node}->{e.to_node}", "pending")
+                for e in incoming
+            ]
+            if any(s == "pending" for s in edge_states):
+                continue  # 还有入边未确定，暂不就绪
+
+            if all(s == "skipped" for s in edge_states):
+                # 所有上游都跳过 → 本节点也跳过，并向下传播跳过
+                self._mark_skipped(workflow, context, node)
+                continue
+
+            ready.append(node)
+        return ready
+
+    def _mark_skipped(self, workflow: WorkflowDefinition, context: WorkflowContext, node: WorkflowNode) -> None:
+        """将节点标记为跳过，并把其所有出边置为 skipped。"""
+        context.node_results[node.id] = NodeResult(
+            node_id=node.id,
+            node_name=node.name,
+            status=NodeStatus.SKIPPED,
+            completed_at=datetime.now(),
+        )
+        for nid in node.next_nodes:
+            context.edge_states[f"{node.id}->{nid}"] = "skipped"
+
+    def _propagate(
+        self,
+        workflow: WorkflowDefinition,
+        context: WorkflowContext,
+        node_id: str,
+        result: NodeResult,
+    ) -> None:
+        """根据节点执行结果，设置其出边为 activated 或 skipped。
+
+        - 条件节点：result.output["result"] 为真走第一条出边，否则走第二条。
+        - 普通节点：激活所有出边（fan-out）。
+        """
+        node = workflow.get_node(node_id)
+        if not node or not node.next_nodes:
+            return
+
+        if node.node_type == NodeType.CONDITION:
+            cond_true = bool(result.output and result.output.get("result", False))
+            for i, nid in enumerate(node.next_nodes):
+                # 约定：next_nodes[0] = true 分支, next_nodes[1] = false 分支
+                activated = (i == 0 and cond_true) or (i == 1 and not cond_true)
+                context.edge_states[f"{node_id}->{nid}"] = "activated" if activated else "skipped"
+        else:
+            for nid in node.next_nodes:
+                context.edge_states[f"{node_id}->{nid}"] = "activated"
 
     async def _execute_node(self, node: WorkflowNode, context: WorkflowContext) -> NodeResult:
         """执行节点"""
@@ -426,28 +525,12 @@ class WorkflowEngine:
             return {"condition": resolved, "result": False}
 
     async def _execute_parallel(self, node: WorkflowNode, context: WorkflowContext) -> Any:
-        """并行执行多个子节点"""
-        next_ids = node.next_nodes
-        if not next_ids:
-            return {"parallel_tasks": [], "status": "no_tasks"}
+        """并行节点 - 作为 fan-out 标记。
 
-        async def run_child(child_id: str) -> dict[str, Any]:
-            child_node = context.workflow_def.get_node(child_id) if hasattr(context, "workflow_def") else None
-            if not child_node:
-                return {"node_id": child_id, "status": "not_found"}
-            result = await self._execute_node(child_node, context)
-            context.update(child_id, result)
-            return {"node_id": child_id, "status": result.status.value, "output": result.output}
-
-        results = await asyncio.gather(*[run_child(nid) for nid in next_ids], return_exceptions=True)
-        outputs = []
-        for r in results:
-            if isinstance(r, Exception):
-                outputs.append({"status": "error", "error": str(r)})
-            else:
-                outputs.append(r)
-
-        return {"parallel_tasks": outputs, "status": "completed"}
+        DAG 调度器会在本节点完成后激活其所有出边，使后继节点在同一调度轮次中并发执行，
+        因此这里无需手动执行子节点（旧实现引用了不存在的 context.workflow_def，必失败）。
+        """
+        return {"status": "fan_out", "branches": list(node.next_nodes)}
 
     async def _wait_for_human(self, node: WorkflowNode, context: WorkflowContext) -> NodeResult:
         """等待人工输入"""
@@ -470,25 +553,6 @@ class WorkflowEngine:
             if placeholder in result:
                 result = result.replace(placeholder, str(value))
         return result
-
-    def _get_next_node(
-        self,
-        current_node: WorkflowNode,
-        result: NodeResult,
-        workflow: WorkflowDefinition,
-    ) -> str | None:
-        """获取下一个节点"""
-        if not current_node.next_nodes:
-            return None
-
-        if current_node.node_type == NodeType.CONDITION and result.output:
-            condition_result = result.output.get("result", False)
-            if condition_result:
-                return current_node.next_nodes[0]
-            else:
-                return current_node.next_nodes[1] if len(current_node.next_nodes) > 1 else None
-
-        return current_node.next_nodes[0]
 
     def get_running_workflows(self) -> list[WorkflowContext]:
         return list(self.running_workflows.values())

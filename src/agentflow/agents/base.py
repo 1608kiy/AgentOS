@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from abc import ABC, abstractmethod
@@ -28,6 +29,9 @@ class AgentConfig(BaseModel):
     llm_provider: LLMProvider = LLMProvider.OPENAI
     llm_model: str = "gpt-4o-mini"
     llm_api_key: str = ""
+    openai_base_url: str = ""       # OpenAI 兼容端点（MiMo 等第三方服务）
+    anthropic_api_key: str = ""
+    anthropic_base_url: str = ""
     max_iterations: int = 10
     temperature: float = 0.7
     max_tokens: int = 4096
@@ -136,6 +140,9 @@ class BaseAgent(ABC):
                 api_key=self.config.llm_api_key,
                 temperature=self.config.temperature,
                 max_tokens=self.config.max_tokens,
+                openai_base_url=self.config.openai_base_url,
+                anthropic_api_key=self.config.anthropic_api_key,
+                anthropic_base_url=self.config.anthropic_base_url,
             )
             self.llm = LLMFactory.create(llm_config)
         else:
@@ -166,6 +173,9 @@ class BaseAgent(ABC):
         # Token追踪
         self._total_tokens: int = 0
 
+        # 记忆懒初始化标记
+        self._memory_ready: bool = False
+
         # 系统提示
         if self.config.system_prompt:
             self.conversation.add_system(self.config.system_prompt)
@@ -179,7 +189,12 @@ class BaseAgent(ABC):
         return self.config.system_prompt
 
     async def run(self, task: str, context: str | None = None) -> AgentResponse:
-        """主执行循环 - ReAct模式"""
+        """主执行循环 - 原生 tool-calling 单循环
+
+        每轮迭代只做 **一次** LLM 调用：模型要么返回工具调用（执行后继续循环），
+        要么返回最终答案（结束）。相比旧版 think→should_answer→decide→answer
+        的 3-4 次调用，速度与成本降低约 3-4 倍，且决策更连贯。
+        """
         start_time = time.perf_counter()
         self.state.set_status(AgentStatus.THINKING)
         self.logger.log_agent_start(task)
@@ -204,96 +219,77 @@ class BaseAgent(ABC):
         if context:
             user_content = f"上下文:\n{context}\n\n任务: {task}"
 
-        # H2: 注入记忆上下文
-        memory_context = self.memory.get_context_string()
+        # 注入相关的长期记忆（语义召回，而非重复短期上下文）
+        memory_context = await self._recall_memory(task)
         if memory_context:
-            user_content = f"[记忆上下文]\n{memory_context}\n\n[当前任务]\n{user_content}"
+            user_content = f"[相关记忆]\n{memory_context}\n\n[当前任务]\n{user_content}"
 
         self.conversation.add_user(user_content)
 
-        token_usage: dict[str, int] = {}
+        token_usage: dict[str, int] = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
         try:
-            for iteration in range(self.state.max_iterations):
+            answer = ""
+            for _ in range(self.state.max_iterations):
                 self.state.increment_iteration()
 
-                # 1. Think
-                thought = await self._think()
-                self.logger.log_agent_thinking(thought)
+                # 单次 LLM 调用：要么给出工具调用，要么给出答案
+                response = await self._step()
+                self._accumulate_usage(token_usage, response)
+                self._total_tokens += response.total_tokens
 
-                # 2. Decide - H5: LLM决策
-                if await self._should_answer(thought):
+                tool_calls = [self._parse_tool_call(tc) for tc in response.tool_calls]
+                tool_calls = [tc for tc in tool_calls if tc is not None]
+
+                if tool_calls:
+                    # 记录模型的思考/工具决策
+                    if response.content:
+                        self.logger.log_agent_thinking(response.content)
+                        self.conversation.add_assistant(response.content)
+                    # 执行所有工具调用，结果回灌到对话
+                    for tool_call in tool_calls:
+                        result = await self._execute_tool(tool_call)
+                        self.logger.log_agent_action(tool_call.name, result.content)
+                        # 用 user 角色回灌观测，保证跨 provider 兼容（避免严格的
+                        # tool_call_id 配对要求导致部分模型报错）
+                        self.conversation.add_user(
+                            f"[工具 {tool_call.name} 的结果]\n{result.content}"
+                        )
+                    continue
+
+                # 没有工具调用 → 这是最终答案
+                answer = response.content
+                if not answer:
                     answer = await self._generate_answer()
-                    duration = (time.perf_counter() - start_time) * 1000
-                    self.state.set_status(AgentStatus.COMPLETED)
-                    self.logger.log_agent_complete(answer, duration)
-
-                    # H2: 将结果存入记忆
-                    await self.memory.remember(
-                        f"任务: {task}\n结果: {answer[:500]}",
-                        memory_type="short",
-                    )
-
-                    response = AgentResponse(
-                        agent_id=self.id,
-                        content=answer,
-                        iterations=self.state.iteration,
-                        duration_ms=duration,
-                        token_usage=token_usage,
-                        metadata={"trace_id": trace_id},
-                    )
-
-                    # 中间件：执行后
-                    for mw in self._middlewares:
-                        response = await mw.after_run(self, response)
-
-                    tracing_manager.end_trace(trace_id)
-                    return response
-
-                # 3. Act
-                tool_call = await self._decide_action(thought)
-                if tool_call:
-                    result = await self._execute_tool(tool_call)
-                    self.logger.log_agent_action(tool_call.name, result.content)
-
-                    self.conversation.add_tool(
-                        f"工具 {tool_call.name} 的结果:\n{result.content}",
-                        name=tool_call.name,
-                        tool_call_id=tool_call.id,
-                    )
                 else:
-                    answer = await self._generate_answer()
-                    duration = (time.perf_counter() - start_time) * 1000
-                    self.state.set_status(AgentStatus.COMPLETED)
+                    self.conversation.add_assistant(answer)
+                break
+            else:
+                # 达到最大迭代仍未收敛 → 强制总结
+                answer = await self._generate_answer()
 
-                    response = AgentResponse(
-                        agent_id=self.id,
-                        content=answer,
-                        iterations=self.state.iteration,
-                        duration_ms=duration,
-                        token_usage=token_usage,
-                    )
-                    for mw in self._middlewares:
-                        response = await mw.after_run(self, response)
-                    tracing_manager.end_trace(trace_id)
-                    return response
-
-            # 达到最大迭代
-            answer = await self._generate_answer()
             duration = (time.perf_counter() - start_time) * 1000
             self.state.set_status(AgentStatus.COMPLETED)
+            self.logger.log_agent_complete(answer, duration)
 
-            response = AgentResponse(
+            # 将结果写入长期记忆，供后续任务语义召回
+            await self._store_memory(task, answer)
+
+            response_obj = AgentResponse(
                 agent_id=self.id,
                 content=answer,
                 iterations=self.state.iteration,
                 duration_ms=duration,
                 token_usage=token_usage,
+                metadata={"trace_id": trace_id},
             )
+
+            # 中间件：执行后
             for mw in self._middlewares:
-                response = await mw.after_run(self, response)
+                response_obj = await mw.after_run(self, response_obj)
+
             tracing_manager.end_trace(trace_id)
-            return response
+            return response_obj
 
         except Exception as e:
             self.state.set_error(str(e))
@@ -308,68 +304,73 @@ class BaseAgent(ABC):
         finally:
             self.state.set_status(AgentStatus.IDLE)
 
-    async def _think(self) -> str:
-        """思考过程"""
-        messages = self.conversation.get_messages()
-        think_prompt = Message.user(
-            "请分析当前情况，决定下一步行动。"
-            "如果需要使用工具，说明需要使用哪个工具以及原因。"
-            "如果已经有足够信息回答，请直接给出答案。"
-        )
-        messages.append(think_prompt)
-
-        response = await self.llm.chat(messages)
-        self._total_tokens += response.total_tokens
-        return response.content
-
-    async def _should_answer(self, thought: str) -> bool:
-        """H5: 使用LLM决策是否应该直接回答"""
-        messages = [
-            Message.system(
-                "你是一个决策助手。根据给定的思考内容，判断是否已经有足够信息来回答用户的问题。\n"
-                "如果已经有足够信息，回复 'YES'。\n"
-                "如果还需要使用工具获取更多信息，回复 'NO'。\n"
-                "只回复 YES 或 NO，不要输出其他内容。"
-            ),
-            Message.user(f"思考内容:\n{thought}\n\n是否有足够信息回答？"),
-        ]
-
-        try:
-            response = await self.llm.chat(messages)
-            decision = response.content.strip().upper()
-            return "YES" in decision
-        except Exception:
-            # 降级：如果思考内容足够长，认为已有足够信息
-            return len(thought) > 100
-
-    async def _decide_action(self, thought: str) -> ToolCall | None:
-        """决定执行的动作"""
+    async def _step(self) -> LLMResponse:
+        """单步推理：有工具则用原生 function-calling，否则普通对话。"""
+        messages = list(self.conversation.get_messages())
         tool_schemas = self.tools.to_function_schemas()
-        if not tool_schemas:
+        if tool_schemas:
+            return await self.llm.function_call(messages, tool_schemas)
+        return await self.llm.chat(messages)
+
+    def _parse_tool_call(self, tc: dict[str, Any]) -> ToolCall | None:
+        """解析不同 provider 的工具调用结构为统一的 ToolCall。
+
+        OpenAI 形态: {"id":.., "function": {"name":.., "arguments": "json串"}}
+        Anthropic 形态: {"id":.., "name":.., "arguments": {..}}
+        """
+        try:
+            if "function" in tc:  # OpenAI 兼容
+                fn = tc["function"]
+                name = fn.get("name", "")
+                raw_args = fn.get("arguments", {})
+            else:  # Anthropic / 通用
+                name = tc.get("name", "")
+                raw_args = tc.get("arguments", {})
+            if not name:
+                return None
+            args = json.loads(raw_args) if isinstance(raw_args, str) else (raw_args or {})
+            return ToolCall(id=tc.get("id") or str(uuid4()), name=name, arguments=args)
+        except Exception:
             return None
 
-        messages = self.conversation.get_messages()
-        messages.append(Message.assistant(thought))
-        messages.append(Message.user(
-            "基于以上分析，请决定要调用的工具。"
-            "如果没有合适的工具可以使用，返回空。"
-        ))
+    @staticmethod
+    def _accumulate_usage(acc: dict[str, int], response: LLMResponse) -> None:
+        """累加 token 使用量。"""
+        usage = getattr(response, "usage", {}) or {}
+        for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+            acc[key] = acc.get(key, 0) + int(usage.get(key, 0))
 
+    async def _ensure_memory(self) -> None:
+        """懒初始化记忆系统（首次使用时接通长期向量存储）。"""
+        if self._memory_ready:
+            return
         try:
-            response = await self.llm.function_call(messages, tool_schemas)
-            self._total_tokens += response.total_tokens
-            if response.tool_calls:
-                tc = response.tool_calls[0]
-                args = tc["function"]["arguments"]
-                return ToolCall(
-                    id=tc.get("id", str(uuid4())),
-                    name=tc["function"]["name"],
-                    arguments=json.loads(args) if isinstance(args, str) else args,
-                )
+            await self.memory.initialize()
         except Exception:
             pass
+        self._memory_ready = True
 
-        return None
+    async def _recall_memory(self, task: str, top_k: int = 3) -> str:
+        """从长期记忆中语义召回与当前任务相关的内容。"""
+        await self._ensure_memory()
+        try:
+            memories = await self.memory.recall(task, memory_type="long", top_k=top_k)
+        except Exception:
+            return ""
+        snippets = [m.content for m in memories if m.content]
+        return "\n".join(f"- {s}" for s in snippets)
+
+    async def _store_memory(self, task: str, answer: str) -> None:
+        """把任务结果写入长期记忆。"""
+        await self._ensure_memory()
+        try:
+            await self.memory.remember(
+                f"任务: {task}\n结果: {answer[:500]}",
+                memory_type="long",
+                metadata={"agent": self.name},
+            )
+        except Exception:
+            pass
 
     async def _execute_tool(self, tool_call: ToolCall) -> ToolResult:
         """执行工具调用"""
@@ -405,8 +406,8 @@ class BaseAgent(ABC):
             )
 
     async def _generate_answer(self) -> str:
-        """生成最终答案"""
-        messages = self.conversation.get_messages()
+        """生成最终答案（在无内容/达到最大迭代时兜底）"""
+        messages = list(self.conversation.get_messages())
         messages.append(Message.user("请基于以上对话和工具结果，生成最终回答。"))
 
         response = await self.llm.chat(messages)
@@ -443,27 +444,14 @@ class BaseAgent(ABC):
 
 
 class ReActAgent(BaseAgent):
-    """标准ReAct Agent"""
+    """标准ReAct Agent
+
+    使用 BaseAgent 的原生 tool-calling 单循环。模型每轮自主决定调用工具或给出答案，
+    无需多次额外的 think/decide 调用。
+    """
 
     def __init__(self, **kwargs: Any):
         super().__init__(**kwargs)
-
-    async def _think(self) -> str:
-        messages = self.conversation.get_messages()
-        tool_list = ", ".join(t.name for t in self.tools.list_tools())
-        think_prompt = Message.user(
-            f"当前可用工具: [{tool_list}]\n\n"
-            "请按以下步骤思考:\n"
-            "1. 分析当前任务和已有信息\n"
-            "2. 判断是否需要使用工具\n"
-            "3. 如果需要工具，说明使用哪个工具及原因\n"
-            "4. 如果已有足够信息，直接给出答案\n\n"
-            "请开始思考:"
-        )
-        messages.append(think_prompt)
-        response = await self.llm.chat(messages)
-        self._total_tokens += response.total_tokens
-        return response.content
 
 
 class PlannerAgent(BaseAgent):
@@ -549,6 +537,3 @@ class SummarizerAgent(BaseAgent):
         ))
         super().__init__(**kwargs)
 
-
-# 需要在顶部导入asyncio
-import asyncio

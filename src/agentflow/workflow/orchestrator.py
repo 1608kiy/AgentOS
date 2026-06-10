@@ -236,13 +236,32 @@ class AgentOrchestrator:
         if not supervisor:
             raise ValueError(f"Supervisor不存在: {supervisor_id}")
 
+        # 按「名称」给 Supervisor 描述团队成员及其能力（而非 LLM 无法理解的 UUID）
+        # 同名时附加短 id 后缀以消歧，并维护 名称->id 的反查表。
+        name_to_id: dict[str, str] = {}
+        roster_lines: list[str] = []
+        for wid in worker_ids:
+            worker = self.agents.get(wid)
+            if not worker:
+                continue
+            display = worker.name
+            if display in name_to_id:  # 重名消歧
+                display = f"{worker.name}#{wid[:8]}"
+            name_to_id[display] = wid
+            capability = (worker.system_prompt or "").strip().replace("\n", " ")
+            if len(capability) > 120:
+                capability = capability[:120] + "…"
+            roster_lines.append(f"- {display}: {capability or '通用助手'}")
+
+        roster = "\n".join(roster_lines)
+
         # Supervisor分解任务
         plan_prompt = (
-            f"你是一个主管，需要将以下任务分配给团队成员。\n"
-            f"团队成员: {', '.join(worker_ids)}\n"
+            f"你是一个主管，需要把任务分配给最合适的团队成员。\n"
+            f"团队成员及其能力:\n{roster}\n\n"
             f"任务: {task}\n\n"
-            f"请输出JSON格式的任务分配计划:\n"
-            f'[{{"worker_id": "成员ID", "subtask": "子任务描述"}}]'
+            f"请只输出JSON数组，worker 字段必须使用上面列出的成员名称:\n"
+            f'[{{"worker": "成员名称", "subtask": "子任务描述"}}]'
         )
 
         plan_response = await supervisor.run(plan_prompt)
@@ -256,20 +275,28 @@ class AgentOrchestrator:
             if start != -1 and end > start:
                 assignments = json.loads(content[start:end])
             else:
-                assignments = [{"worker_id": wid, "subtask": task} for wid in worker_ids]
+                assignments = [{"worker": name, "subtask": task} for name in name_to_id]
         except Exception:
-            assignments = [{"worker_id": wid, "subtask": task} for wid in worker_ids]
+            assignments = [{"worker": name, "subtask": task} for name in name_to_id]
 
-        # 分配并执行子任务
+        # 分配并执行子任务（按名称反查回 agent id）
         subtask_results = {}
         for assignment in assignments:
-            worker_id = assignment.get("worker_id", "")
+            worker_name = assignment.get("worker") or assignment.get("worker_id", "")
             subtask = assignment.get("subtask", "")
 
-            worker = self.agents.get(worker_id)
+            worker_id = name_to_id.get(worker_name)
+            if not worker_id:
+                # 容错：模糊匹配名称
+                for name, wid in name_to_id.items():
+                    if worker_name and (worker_name in name or name in worker_name):
+                        worker_id = wid
+                        break
+
+            worker = self.agents.get(worker_id) if worker_id else None
             if worker:
                 worker_response = await worker.run(subtask)
-                subtask_results[worker_id] = worker_response.content
+                subtask_results[worker.name] = worker_response.content
                 result.results[worker_id] = {
                     "role": "worker",
                     "subtask": subtask,
@@ -281,7 +308,7 @@ class AgentOrchestrator:
             f"请汇总以下子任务的结果，生成最终报告:\n\n"
             f"原始任务: {task}\n\n"
             f"子任务结果:\n" +
-            "\n".join(f"[{wid}] {output}" for wid, output in subtask_results.items())
+            "\n".join(f"[{name}] {output}" for name, output in subtask_results.items())
         )
 
         summary = await supervisor.run(summary_prompt)

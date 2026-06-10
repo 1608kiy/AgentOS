@@ -9,7 +9,7 @@
     <img src="https://img.shields.io/badge/fastapi-0.115+-009688.svg?logo=fastapi&logoColor=white" alt="FastAPI">
     <img src="https://img.shields.io/badge/streamlit-1.40+-FF4B4B.svg?logo=streamlit&logoColor=white" alt="Streamlit">
     <img src="https://img.shields.io/badge/pydantic-2.9+-E92063.svg" alt="Pydantic">
-    <img src="https://img.shields.io/badge/tests-99_passed-2ECC71.svg" alt="Tests">
+    <img src="https://img.shields.io/badge/tests-123_passed-2ECC71.svg" alt="Tests">
     <img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License">
 </p>
 
@@ -60,9 +60,9 @@
 ## ✨ 核心特性
 
 ### 🤖 Agent系统
-- **ReAct模式** — Think → Decide → Act → Observe 循环
-- **LLM决策停止** — 用LLM判断是否已有足够信息回答
-- **分层记忆** — 短期(对话)/长期(向量)/工作记忆
+- **原生 tool-calling 单循环** — 每轮一次 LLM 调用自主决定「调用工具」或「给出答案」，相比传统多次 think/decide 调用，速度与成本降低约 3-4 倍
+- **多 provider** — OpenAI / Anthropic / 本地(Ollama) / MiMo，统一抽象
+- **分层记忆** — 短期(对话)/长期(向量，自动初始化+语义召回)/工作记忆
 - **中间件管道** — 内容过滤、成本追踪、自定义钩子
 - **Token预算** — 每个Agent独立的token用量追踪
 
@@ -70,22 +70,22 @@
 - **串行执行** — Agent链式执行
 - **并行执行** — asyncio.gather并发
 - **辩论模式** — 多轮讨论+总结
-- **主管模式** — Supervisor分配+Worker执行+汇总
+- **主管模式** — Supervisor 按成员**名称+能力**分配任务，Worker 执行后汇总
 
 ### 🔧 工作流引擎
-- **DAG执行** — 有向无环图，支持条件分支
+- **真正的 DAG 调度** — 基于入度/边状态驱动，支持 fan-out(一对多)、fan-in(多入边汇聚)、就绪节点并发执行
 - **5种节点** — Agent/Tool/Condition/Parallel/Human
-- **真实执行** — 节点注入真实Agent和Tool实例
-- **Human-in-the-loop** — 暂停等待人工审核
+- **条件分支** — 未命中分支自动跳过并向下传播
+- **Human-in-the-loop** — 节点暂停 → `resume()` 注入人工输入后从断点继续
 - **可视化设计器** — Canvas拖拽编辑
 
 ### 🛡️ 企业级特性
 - **JWT + API Key** — 双模式认证
 - **RBAC** — admin/user/viewer角色
 - **LLM重试** — 指数退避(429/500/502/503)
-- **响应缓存** — LRU缓存避免重复调用
+- **响应缓存** — 可选 LRU 缓存（默认关闭，避免 Agent 循环中误命中）
 - **结构化日志** — structlog + 链路追踪
-- **沙箱执行** — subprocess隔离代码执行
+- **沙箱执行** — AST 静态检查 + subprocess 隔离（拦截 import/dunder/危险内置调用绕过）
 
 ### 📊 可观测性
 - **Token成本仪表盘** — Plotly图表
@@ -97,6 +97,11 @@
 - **4种评分器** — 精确/包含/LLM/组合
 - **3套基准集** — general/coding/reasoning
 - **自动评分** — 一键运行评估套件
+
+### 📚 RAG / 文档检索
+- **向量语义检索** — OpenAI 兼容 embeddings 或 sentence-transformers
+- **自动降级** — 无嵌入后端时退化为 TF-IDF 关键词匹配，始终可用
+- **分块 + 重叠** — 段落感知切分，保留上下文
 
 ### 🔌 插件系统
 - **插件注册** — Tool/Agent/Memory可插拔
@@ -287,6 +292,14 @@ agentflow/
 | **可观测** | structlog / OpenTelemetry / Plotly |
 | **部署** | Docker / GitHub Actions |
 | **测试** | pytest / pytest-asyncio |
+
+---
+
+## 🔒 安全说明
+
+代码执行工具（`code_executor`）采用**纵深防御**：AST 静态分析（拦截危险 `import`、dunder 属性访问、`eval/exec/getattr` 等内置调用绕过）+ subprocess 隔离（`-I` 隔离模式、空环境变量、超时）。
+
+这能显著降低风险，但**不是绝对安全的沙箱**。运行完全不可信的代码时，请在 OS 级隔离（容器 / gVisor / nsjail）中执行。
 
 ---
 

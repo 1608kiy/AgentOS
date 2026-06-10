@@ -324,7 +324,17 @@ class FileWriterTool(Tool):
 
 
 class CodeExecutorTool(Tool):
-    """代码执行工具 - 沙箱版（subprocess隔离 + 超时 + 受限builtins）"""
+    """代码执行工具 - 沙箱版（AST静态检查 + subprocess隔离 + 超时 + 干净env）
+
+    安全策略（纵深防御）：
+    1. AST 静态分析：拒绝 import 危险模块、调用危险内置函数、访问 dunder 属性，
+       从语法层面拦截，避免旧版「子串黑名单」既能被绕过（如 ``getattr(__builtins__, ...)``）
+       又会误伤（如变量名里含 "open"）的问题。
+    2. subprocess 隔离 + 空环境变量 + 超时，限制副作用与失控执行。
+
+    注意：这是「降低风险」而非「绝对安全」的沙箱。真正不可信代码应在容器/gVisor/
+    nsjail 等 OS 级隔离中运行（详见 README 安全说明）。
+    """
     name = "code_executor"
     description = "在沙箱中执行Python代码并返回结果。有超时和安全限制。"
     parameters = {
@@ -336,20 +346,59 @@ class CodeExecutorTool(Tool):
         "required": ["code"],
     }
 
-    # 禁止的模块/函数
-    _BLOCKED = frozenset([
-        "os.system", "os.popen", "subprocess", "shutil.rmtree",
-        "socket", "ctypes", "importlib", "__import__",
-        "eval", "exec", "compile", "globals", "locals",
-        "open",  # 限制文件操作
+    # 禁止导入的模块（含子模块前缀匹配）
+    _BLOCKED_MODULES = frozenset([
+        "os", "sys", "subprocess", "shutil", "socket", "ctypes",
+        "importlib", "pickle", "marshal", "multiprocessing", "threading",
+        "pty", "fcntl", "signal", "resource", "mmap",
+    ])
+    # 禁止调用的内置函数
+    _BLOCKED_CALLS = frozenset([
+        "eval", "exec", "compile", "open", "input",
+        "__import__", "globals", "locals", "vars", "getattr",
+        "setattr", "delattr", "memoryview", "breakpoint",
     ])
 
+    def _check_ast(self, code: str) -> str | None:
+        """AST 静态检查。返回错误信息表示拒绝，None 表示通过。"""
+        import ast
+
+        try:
+            tree = ast.parse(code)
+        except SyntaxError as e:
+            return f"语法错误: {e}"
+
+        for node in ast.walk(tree):
+            # 拒绝危险 import
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    top = alias.name.split(".")[0]
+                    if top in self._BLOCKED_MODULES:
+                        return f"安全拒绝: 禁止导入模块 '{alias.name}'"
+            elif isinstance(node, ast.ImportFrom):
+                top = (node.module or "").split(".")[0]
+                if top in self._BLOCKED_MODULES:
+                    return f"安全拒绝: 禁止从模块 '{node.module}' 导入"
+            # 拒绝危险内置调用
+            elif isinstance(node, ast.Call):
+                func = node.func
+                if isinstance(func, ast.Name) and func.id in self._BLOCKED_CALLS:
+                    return f"安全拒绝: 禁止调用 '{func.id}'"
+            # 拒绝 dunder 属性访问（getattr 绕过、__globals__ 逃逸等）
+            elif isinstance(node, ast.Attribute):
+                if node.attr.startswith("__") and node.attr.endswith("__"):
+                    return f"安全拒绝: 禁止访问特殊属性 '{node.attr}'"
+            # 拒绝 dunder 名称引用
+            elif isinstance(node, ast.Name):
+                if node.id.startswith("__") and node.id.endswith("__"):
+                    return f"安全拒绝: 禁止引用特殊名称 '{node.id}'"
+        return None
+
     async def execute(self, code: str = "", timeout: int = 10, **kwargs: Any) -> str:
-        # 预检查
-        code_lower = code.lower()
-        for blocked in self._BLOCKED:
-            if blocked in code_lower:
-                return f"安全拒绝: 代码包含禁止的操作 '{blocked}'"
+        # AST 静态安全检查
+        rejection = self._check_ast(code)
+        if rejection:
+            return rejection
 
         # 使用subprocess在隔离环境中执行
         try:
@@ -364,12 +413,12 @@ class CodeExecutorTool(Tool):
         """在子进程中执行代码"""
         try:
             proc = subprocess.run(
-                [sys.executable, "-c", code],
+                [sys.executable, "-I", "-c", code],
                 capture_output=True,
                 text=True,
                 timeout=timeout,
                 cwd=None,
-                env={},
+                env={"PATH": ""},
             )
             output = ""
             if proc.stdout:
@@ -425,8 +474,94 @@ class APICallTool(Tool):
             return f"API调用错误: {e}"
 
 
+class EmbeddingBackend:
+    """嵌入向量后端 - 优先 OpenAI 兼容 embeddings，其次 sentence-transformers。
+
+    用于 DocumentRetrievalTool 的真实语义检索。任一后端可用即启用向量检索，
+    否则调用方自动降级到 TF-IDF 关键词匹配。
+    """
+
+    def __init__(self) -> None:
+        self._mode: str | None = None  # "openai" | "st" | None
+        self._client: Any = None
+        self._model: Any = None
+        self._model_name: str = ""
+        self._init_backend()
+
+    def _init_backend(self) -> None:
+        # 便于直接读到 .env 中的 key（pydantic-settings 不会写入 os.environ）
+        try:
+            from dotenv import load_dotenv
+            load_dotenv()
+        except Exception:
+            pass
+        # 1) OpenAI 兼容 embeddings（复用 LLM 的 key / base_url）
+        api_key = os.getenv("LLM_API_KEY", "") or os.getenv("OPENAI_API_KEY", "")
+        if api_key:
+            try:
+                from openai import OpenAI
+                kwargs: dict[str, Any] = {"api_key": api_key}
+                base_url = os.getenv("LLM_OPENAI_BASE_URL", "") or os.getenv("OPENAI_BASE_URL", "")
+                if base_url:
+                    kwargs["base_url"] = base_url
+                self._client = OpenAI(**kwargs)
+                self._model_name = os.getenv("VECTOR_EMBEDDING_MODEL", "") or "text-embedding-3-small"
+                self._mode = "openai"
+                return
+            except Exception:
+                self._client = None
+        # 2) 本地 sentence-transformers
+        try:
+            from sentence_transformers import SentenceTransformer
+            self._model = SentenceTransformer("all-MiniLM-L6-v2")
+            self._mode = "st"
+            return
+        except Exception:
+            self._model = None
+
+    @property
+    def available(self) -> bool:
+        return self._mode is not None
+
+    def embed(self, texts: list[str]) -> list[list[float]] | None:
+        """批量嵌入。失败返回 None，调用方据此降级。
+
+        若后端连续失败（如端点不支持 embeddings），自动停用以避免重复无效请求。
+        """
+        if not texts or not self.available:
+            return None
+        try:
+            if self._mode == "openai":
+                resp = self._client.embeddings.create(model=self._model_name, input=texts)
+                return [d.embedding for d in resp.data]
+            if self._mode == "st":
+                return [list(map(float, v)) for v in self._model.encode(texts)]
+        except Exception:
+            # 端点不支持/不可用 → 停用后端，后续直接走 TF-IDF 降级
+            self._mode = None
+            return None
+        return None
+
+
+def _cosine(a: list[float], b: list[float]) -> float:
+    """余弦相似度（纯 Python，避免强依赖 numpy）。"""
+    if not a or not b or len(a) != len(b):
+        return 0.0
+    import math
+    dot = sum(x * y for x, y in zip(a, b))
+    na = math.sqrt(sum(x * x for x in a))
+    nb = math.sqrt(sum(y * y for y in b))
+    if na == 0 or nb == 0:
+        return 0.0
+    return dot / (na * nb)
+
+
 class DocumentRetrievalTool(Tool):
-    """文档检索工具 - 简易RAG"""
+    """文档检索工具 - 向量语义检索（带 TF-IDF 降级）
+
+    优先使用真实嵌入向量（OpenAI 兼容 / sentence-transformers）做语义检索；
+    当无嵌入后端或嵌入失败时，自动降级到 TF-IDF 关键词匹配，保证始终可用。
+    """
     name = "document_retrieval"
     description = "从已加载的文档中检索相关内容。用于回答用户关于文档的问题。"
     parameters = {
@@ -438,8 +573,18 @@ class DocumentRetrievalTool(Tool):
         "required": ["query"],
     }
 
-    def __init__(self) -> None:
-        self._documents: list[dict[str, str]] = []  # {"content": ..., "source": ..., "chunk_id": ...}
+    # 进程级共享嵌入后端，避免每个工具实例重复初始化模型
+    _shared_embedder: EmbeddingBackend | None = None
+
+    def __init__(self, embedder: EmbeddingBackend | None = None) -> None:
+        self._documents: list[dict[str, Any]] = []  # {content, source, chunk_id, embedding?}
+        if embedder is not None:
+            self._embedder = embedder
+        else:
+            if DocumentRetrievalTool._shared_embedder is None:
+                DocumentRetrievalTool._shared_embedder = EmbeddingBackend()
+            self._embedder = DocumentRetrievalTool._shared_embedder
+        self._pending_embed = False  # 是否有 chunk 尚未生成 embedding
 
     def load_file(self, file_path: str) -> int:
         """加载文件并分块"""
@@ -448,26 +593,22 @@ class DocumentRetrievalTool(Tool):
             if not path.exists():
                 return 0
             content = path.read_text(encoding="utf-8")
-            chunks = self._split_text(content, max_len=500, overlap=50)
-            for i, chunk in enumerate(chunks):
-                self._documents.append({
-                    "content": chunk,
-                    "source": str(path.name),
-                    "chunk_id": f"{path.name}:{i}",
-                })
-            return len(chunks)
+            return self.load_text(content, source=str(path.name))
         except Exception:
             return 0
 
     def load_text(self, text: str, source: str = "user_input") -> int:
-        """加载文本并分块"""
+        """加载文本并分块（embedding 在首次检索时惰性批量生成）"""
         chunks = self._split_text(text, max_len=500, overlap=50)
         for i, chunk in enumerate(chunks):
             self._documents.append({
                 "content": chunk,
                 "source": source,
                 "chunk_id": f"{source}:{i}",
+                "embedding": None,
             })
+        if chunks:
+            self._pending_embed = True
         return len(chunks)
 
     def _split_text(self, text: str, max_len: int = 500, overlap: int = 50) -> list[str]:
@@ -489,8 +630,24 @@ class DocumentRetrievalTool(Tool):
             chunks.append(current.strip())
         return chunks if chunks else [text[:max_len]]
 
+    def _ensure_embeddings(self) -> bool:
+        """为尚未嵌入的 chunk 批量生成 embedding。返回是否成功启用向量检索。"""
+        if not self._embedder.available:
+            return False
+        if not self._pending_embed:
+            return any(d.get("embedding") for d in self._documents)
+        missing = [d for d in self._documents if d.get("embedding") is None]
+        if missing:
+            vectors = self._embedder.embed([d["content"] for d in missing])
+            if vectors is None or len(vectors) != len(missing):
+                return False
+            for d, vec in zip(missing, vectors):
+                d["embedding"] = vec
+        self._pending_embed = False
+        return True
+
     def _score(self, query: str, text: str) -> float:
-        """TF-IDF + 余弦相似度评分"""
+        """TF-IDF + 余弦相似度评分（向量后端不可用时的降级路径）"""
         try:
             import numpy as np
             # 构建词汇表
@@ -530,13 +687,34 @@ class DocumentRetrievalTool(Tool):
         if not self._documents:
             return "没有已加载的文档。请先使用 file_reader 读取文件，或直接将文档内容粘贴给 Agent。"
 
-        scored = [(self._score(query, doc["content"]), doc) for doc in self._documents]
+        # 优先向量语义检索
+        method = "TF-IDF"
+        scored: list[tuple[float, dict[str, Any]]] = []
+        if await asyncio.get_event_loop().run_in_executor(None, self._ensure_embeddings):
+            q_emb_list = await asyncio.get_event_loop().run_in_executor(
+                None, self._embedder.embed, [query]
+            )
+            if q_emb_list:
+                q_emb = q_emb_list[0]
+                scored = [
+                    (_cosine(q_emb, doc["embedding"]), doc)
+                    for doc in self._documents
+                    if doc.get("embedding")
+                ]
+                method = "向量"
+
+        # 降级：TF-IDF
+        if not scored:
+            scored = [(self._score(query, doc["content"]), doc) for doc in self._documents]
+
         scored.sort(key=lambda x: x[0], reverse=True)
 
         results = []
         for score, doc in scored[:top_k]:
             if score > 0:
-                results.append(f"[来源: {doc['chunk_id']} | 相关度: {score:.0%}]\n{doc['content']}")
+                results.append(
+                    f"[来源: {doc['chunk_id']} | 相关度: {score:.0%} | {method}]\n{doc['content']}"
+                )
 
         if not results:
             return "未找到与查询相关的文档片段。"
@@ -544,6 +722,7 @@ class DocumentRetrievalTool(Tool):
 
     def clear(self) -> None:
         self._documents.clear()
+        self._pending_embed = False
 
 
 def create_default_registry() -> ToolRegistry:

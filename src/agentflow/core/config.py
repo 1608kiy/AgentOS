@@ -59,14 +59,14 @@ class LLMConfig(BaseSettings):
     local_base_url: str = "http://localhost:11434"
     local_model: str = "llama3"
 
-    model_config = {"env_prefix": "LLM_"}
+    model_config = {"env_prefix": "LLM_", "extra": "ignore"}
 
 
 class DatabaseConfig(BaseSettings):
     """数据库配置"""
     url: str = "sqlite:///./data/agentflow.db"
 
-    model_config = {"env_prefix": "DATABASE_"}
+    model_config = {"env_prefix": "DATABASE_", "extra": "ignore"}
 
 
 class RedisConfig(BaseSettings):
@@ -74,7 +74,7 @@ class RedisConfig(BaseSettings):
     url: str = "redis://localhost:6379"
     password: str = ""
 
-    model_config = {"env_prefix": "REDIS_"}
+    model_config = {"env_prefix": "REDIS_", "extra": "ignore"}
 
 
 class AgentConfig(BaseSettings):
@@ -83,7 +83,7 @@ class AgentConfig(BaseSettings):
     timeout_seconds: int = 300
     default_model: str = "gpt-4o-mini"
 
-    model_config = {"env_prefix": "AGENT_"}
+    model_config = {"env_prefix": "AGENT_", "extra": "ignore"}
 
 
 class VectorStoreConfig(BaseSettings):
@@ -92,7 +92,7 @@ class VectorStoreConfig(BaseSettings):
     store_path: str = "./data/chroma"
     embedding_model: str = "text-embedding-3-small"
 
-    model_config = {"env_prefix": "VECTOR_"}
+    model_config = {"env_prefix": "VECTOR_", "extra": "ignore"}
 
 
 class APIConfig(BaseSettings):
@@ -101,7 +101,7 @@ class APIConfig(BaseSettings):
     port: int = 8000
     secret_key: str = "change-this-to-a-random-secret-key"
 
-    model_config = {"env_prefix": "API_"}
+    model_config = {"env_prefix": "API_", "extra": "ignore"}
 
 
 class LoggingConfig(BaseSettings):
@@ -109,7 +109,12 @@ class LoggingConfig(BaseSettings):
     level: LogLevel = LogLevel.INFO
     format: LogFormat = LogFormat.JSON
 
-    model_config = {"env_prefix": "LOG_"}
+    model_config = {"env_prefix": "LOG_", "extra": "ignore"}
+
+
+# 项目根目录（src/agentflow/core/ → src/agentflow/ → project root）
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
+_ENV_FILE = _PROJECT_ROOT / ".env"
 
 
 class AgentFlowConfig(BaseSettings):
@@ -127,7 +132,7 @@ class AgentFlowConfig(BaseSettings):
     api: APIConfig = Field(default_factory=APIConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
 
-    model_config = {"env_prefix": "", "env_file": ".env", "env_file_encoding": "utf-8"}
+    model_config = {"env_prefix": "", "env_file": str(_ENV_FILE), "env_file_encoding": "utf-8", "extra": "ignore"}
 
     @field_validator("environment", mode="before")
     @classmethod
@@ -148,3 +153,12 @@ def load_config(env_file: str | Path | None = None) -> AgentFlowConfig:
     if env_file:
         return AgentFlowConfig(_env_file=env_file)
     return AgentFlowConfig()
+
+
+def load_env_if_needed() -> None:
+    """确保 .env 已加载到环境变量（供非 pydantic-settings 代码使用）"""
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(_ENV_FILE, override=False)
+    except Exception:
+        pass

@@ -163,3 +163,91 @@ def test_workflow_context():
     context.set_variable("key", "value")
     assert context.get_variable("key") == "value"
     assert context.get_variable("missing", "default") == "default"
+
+
+@pytest.mark.asyncio
+async def test_workflow_resume_human_node():
+    """测试 human 节点暂停后 resume 能继续执行后续节点（修复前为空壳）。"""
+    executor = DefaultNodeExecutor()
+    executor.set_tool_registry(create_default_registry())
+    engine = WorkflowEngine(executor=executor)
+
+    builder = WorkflowBuilder("resume_test")
+    builder.add_human_node("review", "请审核")
+    builder.add_tool_node("calc", "calculator", {"expression": "6*7"})
+    builder.connect("review", "calc")
+    builder.set_entry("review")
+    builder.set_exit("calc")
+
+    workflow = builder.build()
+    context = await engine.execute(workflow)
+    assert context.status == "waiting"
+    assert context.waiting_node is not None
+
+    # 恢复执行
+    resumed = await engine.resume(context.id, human_input="同意")
+    assert resumed.status == "completed"
+    # 后续工具节点确实被执行
+    calc_node = workflow.get_node_by_name("calc")
+    assert calc_node.id in resumed.node_results
+    assert resumed.node_results[calc_node.id].status == NodeStatus.COMPLETED
+    assert "42" in str(resumed.node_results[calc_node.id].output)
+
+
+@pytest.mark.asyncio
+async def test_workflow_parallel_fan_out_fan_in():
+    """测试并行 fan-out 后多分支汇聚（修复前并行节点必失败）。"""
+    executor = DefaultNodeExecutor()
+    executor.set_tool_registry(create_default_registry())
+    engine = WorkflowEngine(executor=executor)
+
+    builder = WorkflowBuilder("parallel_test")
+    builder.add_parallel_node("split")
+    builder.add_tool_node("a", "calculator", {"expression": "1+1"})
+    builder.add_tool_node("b", "calculator", {"expression": "2+2"})
+    builder.add_tool_node("join", "calculator", {"expression": "10+10"})
+    builder.connect("split", "a")
+    builder.connect("split", "b")
+    builder.connect("a", "join")
+    builder.connect("b", "join")
+    builder.set_entry("split")
+    builder.set_exit("join")
+
+    workflow = builder.build()
+    context = await engine.execute(workflow)
+
+    assert context.status == "completed"
+    # 两个并行分支都执行成功
+    for name, expected in (("a", "2"), ("b", "4"), ("join", "20")):
+        node = workflow.get_node_by_name(name)
+        assert node.id in context.node_results
+        assert context.node_results[node.id].status == NodeStatus.COMPLETED
+        assert expected in str(context.node_results[node.id].output)
+
+
+@pytest.mark.asyncio
+async def test_workflow_condition_skips_branch():
+    """测试条件分支：未命中的分支被跳过，不会执行。"""
+    executor = DefaultNodeExecutor()
+    executor.set_tool_registry(create_default_registry())
+    engine = WorkflowEngine(executor=executor)
+
+    builder = WorkflowBuilder("cond_test")
+    builder.add_condition_node("check", "score > 80")
+    builder.add_tool_node("pass_branch", "calculator", {"expression": "1+1"})
+    builder.add_tool_node("fail_branch", "calculator", {"expression": "9+9"})
+    builder.connect("check", "pass_branch", condition="true")
+    builder.connect("check", "fail_branch", condition="false")
+    builder.set_entry("check")
+    builder.set_exit("pass_branch")
+    builder.set_exit("fail_branch")
+
+    workflow = builder.build()
+    context = await engine.execute(workflow, {"score": "90"})
+
+    assert context.status == "completed"
+    pass_node = workflow.get_node_by_name("pass_branch")
+    fail_node = workflow.get_node_by_name("fail_branch")
+    # true 分支执行，false 分支被跳过
+    assert context.node_results[pass_node.id].status == NodeStatus.COMPLETED
+    assert context.node_results[fail_node.id].status == NodeStatus.SKIPPED

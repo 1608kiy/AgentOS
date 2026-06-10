@@ -142,10 +142,15 @@ class LLMClient(ABC):
         messages: list[Message],
         temperature: float | None = None,
         max_tokens: int | None = None,
-        use_cache: bool = True,
+        use_cache: bool = False,
         **kwargs: Any,
     ) -> LLMResponse:
-        """发送对话请求（带缓存和重试）"""
+        """发送对话请求（带重试，可选缓存）
+
+        注意: use_cache 默认关闭。在 Agent 多轮循环中，相同 messages 命中缓存会
+        导致非确定性行为和难以排查的 bug，因此缓存改为显式 opt-in。
+        仅在确定输入幂等（如批量评估、重复问答）时设 use_cache=True。
+        """
         if use_cache:
             cached = self._cache.get(messages, temperature=temperature, max_tokens=max_tokens)
             if cached:

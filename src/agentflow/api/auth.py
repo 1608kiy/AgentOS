@@ -6,7 +6,9 @@ import hashlib
 import hmac
 import os
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+
+UTC = timezone.utc
 from typing import Any
 
 from fastapi import Depends, HTTPException, Request, Security
@@ -58,14 +60,14 @@ def create_access_token(data: dict[str, Any], expires_delta: timedelta | None = 
 
         config = AuthConfig()
         to_encode = data.copy()
-        expire = datetime.utcnow() + (expires_delta or timedelta(minutes=config.access_token_expire_minutes))
+        expire = datetime.now(UTC) + (expires_delta or timedelta(minutes=config.access_token_expire_minutes))
         to_encode.update({"exp": expire})
         return jwt.encode(to_encode, config.secret_key, algorithm=config.algorithm)
     except ImportError:
         # 如果没有jose，使用简单的token生成
         config = AuthConfig()
         to_encode = data.copy()
-        expire = datetime.utcnow() + (expires_delta or timedelta(minutes=config.access_token_expire_minutes))
+        expire = datetime.now(UTC) + (expires_delta or timedelta(minutes=config.access_token_expire_minutes))
         to_encode.update({"exp": expire.isoformat()})
         import base64
         import json
@@ -97,7 +99,9 @@ def verify_token(token: str) -> TokenData | None:
             exp_str = decoded.get("exp")
             if exp_str:
                 exp = datetime.fromisoformat(exp_str)
-                if exp < datetime.utcnow():
+                if exp.tzinfo is None:
+                    exp = exp.replace(tzinfo=UTC)
+                if exp < datetime.now(UTC):
                     return None
             return TokenData(
                 user_id=decoded.get("sub", ""),

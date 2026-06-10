@@ -119,6 +119,31 @@ async def test_code_executor_timeout():
     assert "超时" in result
 
 
+@pytest.mark.asyncio
+async def test_code_executor_blocks_getattr_bypass():
+    """测试代码执行 - 拦截 getattr(__builtins__,...) 绕过（旧版子串黑名单可绕过）"""
+    tool = CodeExecutorTool()
+    result = await tool.execute(code="getattr(__builtins__, '__import__')('os')")
+    assert "安全拒绝" in result
+
+
+@pytest.mark.asyncio
+async def test_code_executor_blocks_dunder_escape():
+    """测试代码执行 - 拦截 dunder 属性逃逸"""
+    tool = CodeExecutorTool()
+    result = await tool.execute(code="print(().__class__.__bases__)")
+    assert "安全拒绝" in result
+
+
+@pytest.mark.asyncio
+async def test_code_executor_no_false_positive_on_open_substring():
+    """测试代码执行 - 字符串里含 'open' 不应误伤（旧版会拒绝）"""
+    tool = CodeExecutorTool()
+    result = await tool.execute(code='print("the door is open")', timeout=5)
+    assert "安全拒绝" not in result
+    assert "open" in result
+
+
 def test_tool_registry():
     """测试工具注册表"""
     registry = ToolRegistry()
@@ -158,3 +183,59 @@ def test_tool_definition():
 
     assert defn.name == "calculator"
     assert "expression" in str(defn.parameters)
+
+
+# ============ 向量 RAG 测试 ============
+
+class _FakeEmbedder:
+    """确定性假嵌入后端：按关键词构造向量，用于离线测试向量检索路径。"""
+    available = True
+
+    _VOCAB = ["排序", "算法", "agent", "工作流", "天气"]
+
+    def embed(self, texts):
+        vecs = []
+        for t in texts:
+            vecs.append([1.0 if w in t else 0.0 for w in self._VOCAB])
+        return vecs
+
+
+@pytest.mark.asyncio
+async def test_document_retrieval_vector_path():
+    """测试真实向量检索路径（用确定性假嵌入）"""
+    from agentflow.tools.base import DocumentRetrievalTool
+
+    tool = DocumentRetrievalTool(embedder=_FakeEmbedder())
+    tool.load_text("快速排序是一种排序算法。", source="doc1")
+    tool.load_text("AgentFlow 支持工作流编排。", source="doc2")
+
+    result = await tool.execute(query="讲讲排序算法", top_k=1)
+    assert "向量" in result          # 走的是向量路径
+    assert "排序" in result          # 命中正确文档
+    assert "工作流" not in result.split("---")[0]
+
+
+@pytest.mark.asyncio
+async def test_document_retrieval_fallback_tfidf():
+    """测试无嵌入后端时降级到 TF-IDF"""
+    from agentflow.tools.base import DocumentRetrievalTool
+
+    class _NoEmbedder:
+        available = False
+        def embed(self, texts):
+            return None
+
+    tool = DocumentRetrievalTool(embedder=_NoEmbedder())
+    tool.load_text("quick sort is a sorting algorithm", source="doc")
+    result = await tool.execute(query="sorting algorithm", top_k=1)
+    assert "TF-IDF" in result
+    assert "sort" in result
+
+
+@pytest.mark.asyncio
+async def test_document_retrieval_empty():
+    """测试未加载文档时的提示"""
+    from agentflow.tools.base import DocumentRetrievalTool
+    tool = DocumentRetrievalTool(embedder=_FakeEmbedder())
+    result = await tool.execute(query="anything")
+    assert "没有已加载的文档" in result

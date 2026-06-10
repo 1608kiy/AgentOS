@@ -11,6 +11,10 @@ from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconn
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+from agentflow.core.config import load_env_if_needed
+# 确保 .env 尽早写入 os.environ（解决 pydantic-settings v2 嵌套 Settings 不读 .env 的问题）
+load_env_if_needed()
+
 from agentflow.agents.base import (
     AgentConfig,
     AgentResponse,
@@ -50,9 +54,18 @@ class AppState:
         self.workflow_executor.set_tool_registry(self.tool_registry)
         self.workflow_engine.executor = self.workflow_executor
 
-    def create_agent(self, agent_type: str, name: str, system_prompt: str = "", model: str = "gpt-4o-mini") -> BaseAgent:
-        """创建Agent"""
-        config = AgentConfig(agent_name=name, system_prompt=system_prompt, llm_model=model)
+    def create_agent(self, agent_type: str, name: str, system_prompt: str = "", model: str = "") -> BaseAgent:
+        """创建Agent（自动从全局配置继承 LLM provider/key/base_url）"""
+        config = AgentConfig(
+            agent_name=name,
+            system_prompt=system_prompt,
+            llm_provider=self.config.llm.provider,
+            llm_model=model or self.config.llm.model,
+            llm_api_key=self.config.llm.api_key,
+            openai_base_url=self.config.llm.openai_base_url,
+            anthropic_api_key=self.config.llm.anthropic_api_key,
+            anthropic_base_url=self.config.llm.anthropic_base_url,
+        )
 
         agent_map: dict[str, type[BaseAgent]] = {
             "react": ReActAgent,
@@ -85,6 +98,14 @@ def get_app_state() -> AppState:
     global _app_state
     if _app_state is None:
         _app_state = AppState()
+        import structlog
+        logger = structlog.get_logger()
+        llm = _app_state.config.llm
+        logger.info("app_state_initialized",
+                     provider=llm.provider.value,
+                     model=llm.model,
+                     base_url=llm.openai_base_url,
+                     has_key=bool(llm.api_key))
     return _app_state
 
 
@@ -154,7 +175,7 @@ class AgentCreateRequest(BaseModel):
     name: str
     agent_type: str = "react"
     system_prompt: str = ""
-    model: str = "gpt-4o-mini"
+    model: str = ""  # 空则继承 .env 配置
 
 
 class AgentInfo(BaseModel):
