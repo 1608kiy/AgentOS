@@ -286,7 +286,7 @@ agentflow/
 
 | 层级 | 技术 |
 |------|------|
-| **LLM** | OpenAI / Anthropic / 本地LLM(Ollama) |
+| **LLM** | OpenAI / Anthropic / Gemini / DeepSeek / Qwen / Zhipu / MiMo / 本地(Ollama) |
 | **框架** | Pydantic v2 / FastAPI / Streamlit |
 | **存储** | SQLite / Redis / ChromaDB |
 | **可观测** | structlog / OpenTelemetry / Plotly |

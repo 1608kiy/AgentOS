@@ -34,6 +34,26 @@ LLM_PROVIDER=mimo
 LLM_MODEL=mimo-v2.5-pro
 LLM_API_KEY=你的key
 LLM_OPENAI_BASE_URL=https://你的endpoint/v1
+
+# 或者 DeepSeek 用户
+LLM_PROVIDER=deepseek
+LLM_MODEL=deepseek-chat
+LLM_API_KEY=你的key
+
+# 或者 通义千问(Qwen) 用户
+LLM_PROVIDER=qwen
+LLM_MODEL=qwen-plus
+LLM_API_KEY=你的key
+
+# 或者 智谱(GLM) 用户
+LLM_PROVIDER=zhipu
+LLM_MODEL=glm-4-flash
+LLM_API_KEY=你的key
+
+# 或者 Gemini 用户
+LLM_PROVIDER=gemini
+LLM_MODEL=gemini-2.0-flash
+LLM_API_KEY=你的Google_API_Key
 ```
 
 ## 3. CLI 快速体验
