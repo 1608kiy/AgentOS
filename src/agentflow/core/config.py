@@ -23,6 +23,8 @@ class LLMProvider(str, Enum):
     ANTHROPIC = "anthropic"
     LOCAL = "local"
     MIMO = "mimo"
+    DEEPSEEK = "deepseek"
+    GEMINI = "gemini"
 
 
 class LogLevel(str, Enum):

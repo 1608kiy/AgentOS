@@ -11,7 +11,7 @@ from collections import OrderedDict
 from typing import Any, AsyncIterator
 
 from agentflow.core.config import LLMConfig, LLMProvider
-from agentflow.core.message import Message
+from agentflow.core.message import Message, MessageRole
 
 
 class LLMResponse:
@@ -464,6 +464,13 @@ class LLMFactory:
         provider = config.provider
         if provider in (LLMProvider.LOCAL, LLMProvider.MIMO):
             return OpenAIClient(config)
+        if provider == LLMProvider.DEEPSEEK:
+            # DeepSeek 兼容 OpenAI 协议，用专用 base_url
+            if not config.openai_base_url:
+                config.openai_base_url = "https://api.deepseek.com/v1"
+            return OpenAIClient(config)
+        if provider == LLMProvider.GEMINI:
+            return GeminiClient(config)
         client_class = cls._clients.get(provider)
         if client_class is None:
             raise ValueError(f"不支持的LLM提供商: {provider}")
@@ -476,3 +483,147 @@ class LLMFactory:
     @classmethod
     def register(cls, provider: str, client_class: type[LLMClient]) -> None:
         cls._clients[provider] = client_class
+
+
+class GeminiClient(LLMClient):
+    """Google Gemini 客户端（google-generativeai SDK）"""
+
+    def __init__(self, config: LLMConfig):
+        super().__init__(config)
+        try:
+            import google.generativeai as genai
+            import os
+            api_key = config.api_key or os.environ.get("GOOGLE_API_KEY", "")
+            if not api_key:
+                raise ValueError("Gemini 需要 GOOGLE_API_KEY 或在 LLMConfig 中设置 api_key")
+            genai.configure(api_key=api_key)
+            self._genai = genai
+            self._model = genai.GenerativeModel(config.model)
+        except ImportError:
+            raise ImportError("请安装 google-generativeai: pip install google-generativeai")
+
+    def _to_gemini_messages(self, messages: list[Message]) -> tuple[str, list[dict]]:
+        """将内部 Message 转为 Gemini 格式（system + chat history）。"""
+        system = ""
+        history: list[dict] = []
+        for m in messages:
+            if m.role == MessageRole.SYSTEM:
+                system = m.content
+            elif m.role == MessageRole.USER:
+                history.append({"role": "user", "parts": [m.content]})
+            elif m.role == MessageRole.ASSISTANT:
+                history.append({"role": "model", "parts": [m.content]})
+        # Gemini 要求 history 非空，且以 user 结尾（最后一条 user 留给 generate）
+        if history and history[-1]["role"] == "user":
+            user_msg = history.pop()
+            return system, history, user_msg["parts"][0]
+        return system, history, ""
+
+    async def _chat_impl(
+        self,
+        messages: list[Message],
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        **kwargs: Any,
+    ) -> LLMResponse:
+        system, history, user_text = self._to_gemini_messages(messages)
+        chat = self._model.start_chat(history=history)
+        resp = await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: chat.send_message(
+                user_text,
+                generation_config=self._genai.types.GenerationConfig(
+                    temperature=temperature or self.config.temperature,
+                    max_output_tokens=max_tokens or self.config.max_tokens,
+                ),
+            ),
+        )
+        return LLMResponse(
+            content=resp.text or "",
+            model=self.model,
+            usage={
+                "prompt_tokens": getattr(resp.usage_metadata, "prompt_token_count", 0) if hasattr(resp, "usage_metadata") else 0,
+                "completion_tokens": getattr(resp.usage_metadata, "candidates_token_count", 0) if hasattr(resp, "usage_metadata") else 0,
+                "total_tokens": getattr(resp.usage_metadata, "total_token_count", 0) if hasattr(resp, "usage_metadata") else 0,
+            },
+        )
+
+    async def _stream_chat_impl(
+        self,
+        messages: list[Message],
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        **kwargs: Any,
+    ) -> AsyncIterator[str]:
+        system, history, user_text = self._to_gemini_messages(messages)
+        chat = self._model.start_chat(history=history)
+        stream = await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: chat.send_message(
+                user_text,
+                stream=True,
+                generation_config=self._genai.types.GenerationConfig(
+                    temperature=temperature or self.config.temperature,
+                    max_output_tokens=max_tokens or self.config.max_tokens,
+                ),
+            ),
+        )
+        for chunk in stream:
+            if chunk.text:
+                yield chunk.text
+
+    async def _function_call_impl(
+        self,
+        messages: list[Message],
+        functions: list[dict[str, Any]],
+        temperature: float | None = None,
+        **kwargs: Any,
+    ) -> LLMResponse:
+        # 转换为 Gemini tool 格式
+        tools = [
+            self._genai.protos.FunctionDeclaration(
+                name=f["name"],
+                description=f.get("description", ""),
+                parameters=self._genai.protos.Schema(
+                    type=self._genai.protos.Type.OBJECT,
+                    properties={
+                        k: self._genai.protos.Schema(type=self._genai.protos.Type.STRING, description=v.get("description", ""))
+                        for k, v in f.get("parameters", {}).get("properties", {}).items()
+                    },
+                    required=f.get("parameters", {}).get("required", []),
+                ),
+            )
+            for f in functions
+        ]
+        system, history, user_text = self._to_gemini_messages(messages)
+        model = self._genai.GenerativeModel(self.model, tools=[self._genai.protos.Tool(function_declarations=tools)])
+        chat = model.start_chat(history=history)
+        resp = await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: chat.send_message(
+                user_text,
+                generation_config=self._genai.types.GenerationConfig(
+                    temperature=temperature or self.config.temperature,
+                    max_output_tokens=self.config.max_tokens,
+                ),
+            ),
+        )
+        content = ""
+        tool_calls: list[dict[str, Any]] = []
+        for part in resp.parts:
+            if hasattr(part, "text") and part.text:
+                content += part.text
+            elif hasattr(part, "function_call") and part.function_call:
+                fc = part.function_call
+                tool_calls.append({
+                    "id": f"gemini_{fc.name}",
+                    "function": {"name": fc.name, "arguments": dict(fc.args)},
+                })
+        return LLMResponse(
+            content=content,
+            model=self.model,
+            usage={
+                "total_tokens": getattr(resp.usage_metadata, "total_token_count", 0) if hasattr(resp, "usage_metadata") else 0,
+            },
+            tool_calls=tool_calls,
+        )
