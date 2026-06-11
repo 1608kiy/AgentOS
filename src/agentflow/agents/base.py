@@ -12,7 +12,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
-from agentflow.core.config import LLMConfig, LLMProvider
+from agentflow.core.config import AgentFlowConfig, LLMConfig, LLMProvider
 from agentflow.core.llm import LLMClient, LLMFactory, LLMResponse, MockLLMClient
 from agentflow.core.logging import AgentLogger, tracing_manager
 from agentflow.core.message import ConversationHistory, Message, ToolCall, ToolResult
@@ -151,6 +151,27 @@ class CostTrackerMiddleware(AgentMiddleware):
 class BaseAgent(ABC):
     """Agent基类"""
 
+    @staticmethod
+    def _load_llm_from_env() -> LLMClient | MockLLMClient:
+        """尝试从 .env / 环境变量加载 LLM 配置，用于未显式传入 key 的场景。
+
+        这是独立脚本（examples、CLI）的关键路径：用户只填 .env 里的 key，
+        不需要在代码里手动构造 LLMConfig。无可用配置时 fallback 到 MockLLMClient。
+        """
+        try:
+            from dotenv import load_dotenv
+            load_dotenv()
+        except Exception:
+            pass
+        try:
+            global_config = AgentFlowConfig()
+            llm_cfg = global_config.llm
+            if llm_cfg.api_key or llm_cfg.anthropic_api_key:
+                return LLMFactory.create(llm_cfg)
+        except Exception:
+            pass
+        return MockLLMClient()
+
     def __init__(
         self,
         config: AgentConfig | None = None,
@@ -179,7 +200,8 @@ class BaseAgent(ABC):
             )
             self.llm = LLMFactory.create(llm_config)
         else:
-            self.llm = MockLLMClient()
+            # 尝试从环境变量（.env）加载 LLM 配置，避免独立使用时静默 fallback 到 Mock
+            self.llm = self._load_llm_from_env()
 
         # 工具注册表
         self.tools = tools or create_default_registry()
