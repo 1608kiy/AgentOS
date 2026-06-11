@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "agentflow-tools": {
+      "command": "python",
+      "args": ["-m", "agentflow.cli", "mcp-server"],
+      "cwd": "${workspaceFolder}",
+      "description": "AgentFlow 工具集 — 计算、搜索、文件操作、代码执行、API调用、文档检索",
+      "env": {}
+    }
+  }
+}

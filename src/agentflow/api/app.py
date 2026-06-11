@@ -637,3 +637,43 @@ async def get_costs(
         "total_by_agent": state.cost_tracker.get_usage(),
         "total_tokens": sum(state.cost_tracker.get_usage().values()),
     }
+
+
+# ============ OpenAI 兼容工具 API（Codex / 其他 OpenAI 兼容工具） ============
+
+@app.get("/api/v1/tools")
+async def list_tools_openai_format(
+    state: AppState = Depends(get_app_state),
+):
+    """列出所有工具（OpenAI function-calling schema 格式）。
+
+    供 Codex / OpenAI 兼容工具直接使用。
+    返回格式与 OpenAI tools 参数一致。
+    """
+    schemas = state.tool_registry.to_function_schemas()
+    return [
+        {"type": "function", "function": schema}
+        for schema in schemas
+    ]
+
+
+class ToolCallRequest(BaseModel):
+    """工具调用请求"""
+    arguments: dict[str, Any] = Field(default_factory=dict)
+
+
+@app.post("/api/v1/tools/{tool_name}/call")
+async def call_tool(
+    tool_name: str,
+    request: ToolCallRequest,
+    state: AppState = Depends(get_app_state),
+):
+    """直接调用指定工具（供 Codex 等工具通过 HTTP 调用）。"""
+    tool = state.tool_registry.get(tool_name)
+    if not tool:
+        raise HTTPException(status_code=404, detail=f"工具不存在: {tool_name}")
+    try:
+        result = await tool.execute(**request.arguments)
+        return {"tool": tool_name, "result": result, "is_error": False}
+    except Exception as e:
+        return {"tool": tool_name, "result": str(e), "is_error": True}
