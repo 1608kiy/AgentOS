@@ -14,7 +14,7 @@ class RouterAgent(ReActAgent):
     """路由Agent - 识别用户意图"""
 
     def __init__(self, **kwargs: Any):
-        kwargs.setdefault("config", AgentConfig(
+        kwargs.setdefault("config", AgentConfig.from_env(
             agent_name="Router",
             system_prompt="""你是一个智能客服路由Agent。你的职责是：
 1. 分析用户的问题
@@ -35,7 +35,7 @@ class OrderAgent(ReActAgent):
     """订单Agent - 处理订单相关问题"""
 
     def __init__(self, **kwargs: Any):
-        kwargs.setdefault("config", AgentConfig(
+        kwargs.setdefault("config", AgentConfig.from_env(
             agent_name="OrderService",
             system_prompt="""你是一个订单服务Agent。你可以帮助用户：
 1. 查询订单状态
@@ -52,7 +52,7 @@ class TechAgent(ReActAgent):
     """技术支持Agent"""
 
     def __init__(self, **kwargs: Any):
-        kwargs.setdefault("config", AgentConfig(
+        kwargs.setdefault("config", AgentConfig.from_env(
             agent_name="TechSupport",
             system_prompt="""你是一个技术支持Agent。你可以帮助用户：
 1. 解答产品使用问题
@@ -69,7 +69,7 @@ class SalesAgent(ReActAgent):
     """销售Agent"""
 
     def __init__(self, **kwargs: Any):
-        kwargs.setdefault("config", AgentConfig(
+        kwargs.setdefault("config", AgentConfig.from_env(
             agent_name="Sales",
             system_prompt="""你是一个销售Agent。你可以帮助用户：
 1. 介绍产品功能
@@ -86,7 +86,7 @@ class SummaryAgent(ReActAgent):
     """总结Agent - 整合回复"""
 
     def __init__(self, **kwargs: Any):
-        kwargs.setdefault("config", AgentConfig(
+        kwargs.setdefault("config", AgentConfig.from_env(
             agent_name="Summary",
             system_prompt="""你是一个总结Agent。你的职责是：
 1. 整合各个Agent的回复

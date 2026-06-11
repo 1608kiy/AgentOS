@@ -24,6 +24,37 @@ def test_agent_config():
     assert config.max_tokens_budget == 100000
 
 
+def test_agent_config_from_env(monkeypatch):
+    """测试 from_env 从环境变量加载 LLM 配置（examples 依赖此能力跑真实 LLM）"""
+    monkeypatch.setenv("LLM_PROVIDER", "deepseek")
+    monkeypatch.setenv("LLM_API_KEY", "test-key-123")
+    monkeypatch.setenv("LLM_MODEL", "deepseek-chat")
+
+    config = AgentConfig.from_env(agent_name="EnvAgent", system_prompt="测试提示")
+    assert config.agent_name == "EnvAgent"
+    assert config.system_prompt == "测试提示"
+    assert config.llm_provider.value == "deepseek"
+    assert config.llm_api_key == "test-key-123"
+    assert config.llm_model == "deepseek-chat"
+
+
+def test_agent_config_from_env_overrides(monkeypatch):
+    """测试 from_env 的字段覆盖"""
+    monkeypatch.setenv("LLM_API_KEY", "test-key")
+    config = AgentConfig.from_env(agent_name="X", temperature=0.1, max_iterations=3)
+    assert config.temperature == 0.1
+    assert config.max_iterations == 3
+
+
+def test_agent_from_env_creates_real_client(monkeypatch):
+    """测试 from_env + 有 key 时创建真实 LLM 客户端而非 MockLLM"""
+    monkeypatch.setenv("LLM_PROVIDER", "openai")
+    monkeypatch.setenv("LLM_API_KEY", "sk-test-key")
+    agent = ReActAgent(config=AgentConfig.from_env(agent_name="RealAgent"))
+    assert not isinstance(agent.llm, MockLLMClient)
+    assert type(agent.llm).__name__ == "OpenAIClient"
+
+
 def test_react_agent_creation():
     """测试ReAct Agent创建"""
     agent = ReActAgent(config=AgentConfig(agent_name="TestAgent"))

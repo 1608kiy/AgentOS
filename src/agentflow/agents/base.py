@@ -38,6 +38,39 @@ class AgentConfig(BaseModel):
     timeout: float = 300.0
     max_tokens_budget: int = 100000  # token预算
 
+    @classmethod
+    def from_env(cls, agent_name: str = "", system_prompt: str = "", **overrides: Any) -> AgentConfig:
+        """从 .env / 环境变量加载 LLM 配置创建 AgentConfig。
+
+        独立脚本（如 examples/）用此方法即可让 Agent 使用真实 LLM，
+        而不会因为缺少 llm_api_key 而静默退化到 MockLLMClient。
+
+        Args:
+            agent_name: Agent 名称
+            system_prompt: 系统提示词
+            **overrides: 覆盖任意 AgentConfig 字段（如 llm_model、temperature）
+        """
+        from agentflow.core.config import AgentFlowConfig, load_env_if_needed
+
+        # 确保 .env 已注入 os.environ（嵌套 LLMConfig 仅从环境变量读取）
+        load_env_if_needed()
+        app_config = AgentFlowConfig()
+        llm = app_config.llm
+        fields: dict[str, Any] = {
+            "agent_name": agent_name,
+            "system_prompt": system_prompt,
+            "llm_provider": llm.provider,
+            "llm_model": llm.model,
+            "llm_api_key": llm.api_key,
+            "openai_base_url": llm.openai_base_url,
+            "anthropic_api_key": llm.anthropic_api_key,
+            "anthropic_base_url": llm.anthropic_base_url,
+            "temperature": llm.temperature,
+            "max_tokens": llm.max_tokens,
+        }
+        fields.update(overrides)
+        return cls(**fields)
+
 
 class AgentResponse(BaseModel):
     """Agent响应"""

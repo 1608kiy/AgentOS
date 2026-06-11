@@ -58,3 +58,9 @@ htmlcov/
 
 # Chroma
 chroma/
+
+# Runtime artifacts (written by file_writer tool / RAG demos)
+/code_to_review.py
+/test.txt
+/test_document.txt
+/conversations.json

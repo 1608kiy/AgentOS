@@ -13,7 +13,7 @@ class SecurityAgent(ReActAgent):
     """安全扫描Agent"""
 
     def __init__(self, **kwargs: Any):
-        kwargs.setdefault("config", AgentConfig(
+        kwargs.setdefault("config", AgentConfig.from_env(
             agent_name="SecurityScanner",
             system_prompt="""你是一个安全审查专家。你的职责是：
 1. 检查代码中的安全漏洞
@@ -33,7 +33,7 @@ class QualityAgent(ReActAgent):
     """质量检查Agent"""
 
     def __init__(self, **kwargs: Any):
-        kwargs.setdefault("config", AgentConfig(
+        kwargs.setdefault("config", AgentConfig.from_env(
             agent_name="QualityChecker",
             system_prompt="""你是一个代码质量专家。你的职责是：
 1. 检查代码风格和规范
@@ -53,7 +53,7 @@ class PerformanceAgent(ReActAgent):
     """性能分析Agent"""
 
     def __init__(self, **kwargs: Any):
-        kwargs.setdefault("config", AgentConfig(
+        kwargs.setdefault("config", AgentConfig.from_env(
             agent_name="PerformanceAnalyzer",
             system_prompt="""你是一个性能优化专家。你的职责是：
 1. 识别性能瓶颈
@@ -73,7 +73,7 @@ class ReviewerAgent(ReActAgent):
     """综合评审Agent"""
 
     def __init__(self, **kwargs: Any):
-        kwargs.setdefault("config", AgentConfig(
+        kwargs.setdefault("config", AgentConfig.from_env(
             agent_name="CodeReviewer",
             system_prompt="""你是一个代码审查负责人。你的职责是：
 1. 整合各个专家的意见

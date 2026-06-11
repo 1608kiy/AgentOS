@@ -13,7 +13,7 @@ class PlannerAgent(ReActAgent):
     """分析规划Agent"""
 
     def __init__(self, **kwargs: Any):
-        kwargs.setdefault("config", AgentConfig(
+        kwargs.setdefault("config", AgentConfig.from_env(
             agent_name="AnalysisPlanner",
             system_prompt="""你是一个数据分析规划专家。你的职责是：
 1. 理解分析需求
@@ -30,7 +30,7 @@ class DataAgent(ReActAgent):
     """数据提取Agent"""
 
     def __init__(self, **kwargs: Any):
-        kwargs.setdefault("config", AgentConfig(
+        kwargs.setdefault("config", AgentConfig.from_env(
             agent_name="DataExtractor",
             system_prompt="""你是一个数据提取专家。你的职责是：
 1. 根据分析需求提取数据
@@ -47,7 +47,7 @@ class AnalystAgent(ReActAgent):
     """数据分析Agent"""
 
     def __init__(self, **kwargs: Any):
-        kwargs.setdefault("config", AgentConfig(
+        kwargs.setdefault("config", AgentConfig.from_env(
             agent_name="DataAnalyst",
             system_prompt="""你是一个数据分析师。你的职责是：
 1. 执行统计分析
@@ -64,7 +64,7 @@ class VisualizerAgent(ReActAgent):
     """可视化Agent"""
 
     def __init__(self, **kwargs: Any):
-        kwargs.setdefault("config", AgentConfig(
+        kwargs.setdefault("config", AgentConfig.from_env(
             agent_name="Visualizer",
             system_prompt="""你是一个数据可视化专家。你的职责是：
 1. 选择合适的图表类型
@@ -81,7 +81,7 @@ class ReporterAgent(ReActAgent):
     """报告生成Agent"""
 
     def __init__(self, **kwargs: Any):
-        kwargs.setdefault("config", AgentConfig(
+        kwargs.setdefault("config", AgentConfig.from_env(
             agent_name="ReportGenerator",
             system_prompt="""你是一个报告撰写专家。你的职责是：
 1. 整合分析结果
