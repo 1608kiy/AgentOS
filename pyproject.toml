@@ -39,8 +39,11 @@ vector = [
 redis = [
     "redis>=5.0.0",
 ]
+mcp = [
+    "mcp>=1.0.0",
+]
 full = [
-    "agentflow[llm,ui,vector,redis]",
+    "agentflow[llm,ui,vector,redis,mcp]",
 ]
 otel = [
     "opentelemetry-api>=1.20.0",

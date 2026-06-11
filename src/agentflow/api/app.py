@@ -38,12 +38,16 @@ from agentflow.workflow.orchestrator import AgentOrchestrator, OrchestrationStra
 # ============ 应用状态（依赖注入） ============
 
 class AppState:
-    """应用状态 - 通过依赖注入替代全局变量"""
+    """应用状态 - 通过依赖注入替代全局变量，支持多租户隔离"""
 
     def __init__(self) -> None:
         self.config = AgentFlowConfig()
+        # 全局注册表（向后兼容 + admin 视图）
         self.agents: dict[str, BaseAgent] = {}
         self.workflows: dict[str, WorkflowDefinition] = {}
+        # 多租户隔离：user_id -> {agent_id: agent}
+        self._user_agents: dict[str, dict[str, BaseAgent]] = {}
+        self._user_workflows: dict[str, dict[str, WorkflowDefinition]] = {}
         self.orchestrator = AgentOrchestrator()
         self.workflow_engine = WorkflowEngine()
         self.cost_tracker = CostTrackerMiddleware()
@@ -54,8 +58,8 @@ class AppState:
         self.workflow_executor.set_tool_registry(self.tool_registry)
         self.workflow_engine.executor = self.workflow_executor
 
-    def create_agent(self, agent_type: str, name: str, system_prompt: str = "", model: str = "") -> BaseAgent:
-        """创建Agent（自动从全局配置继承 LLM provider/key/base_url）"""
+    def create_agent(self, agent_type: str, name: str, system_prompt: str = "", model: str = "", user_id: str = "") -> BaseAgent:
+        """创建Agent（自动从全局配置继承 LLM provider/key/base_url，按 user_id 隔离）"""
         config = AgentConfig(
             agent_name=name,
             system_prompt=system_prompt,
@@ -83,11 +87,47 @@ class AppState:
         agent.add_middleware(ContentFilterMiddleware())
         agent.add_middleware(self.cost_tracker)
 
+        # 全局注册
         self.agents[agent.id] = agent
         self.orchestrator.register_agent(agent)
         self.workflow_executor.register_agent(name, agent)
 
+        # 租户隔离注册
+        if user_id:
+            if user_id not in self._user_agents:
+                self._user_agents[user_id] = {}
+            self._user_agents[user_id][agent.id] = agent
+
         return agent
+
+    def get_user_agents(self, user_id: str) -> list[BaseAgent]:
+        """获取指定用户的 Agent 列表。"""
+        return list(self._user_agents.get(user_id, {}).values())
+
+    def get_user_agent(self, user_id: str, agent_id: str) -> BaseAgent | None:
+        """获取指定用户的 Agent（同时允许访问全局 Agent）。"""
+        tenant = self._user_agents.get(user_id, {})
+        return tenant.get(agent_id) or self.agents.get(agent_id)
+
+    def delete_user_agent(self, user_id: str, agent_id: str) -> bool:
+        """删除指定用户的 Agent。"""
+        tenant = self._user_agents.get(user_id, {})
+        if agent_id in tenant:
+            del tenant[agent_id]
+            self.agents.pop(agent_id, None)
+            return True
+        return False
+
+    def save_user_workflow(self, user_id: str, wf: WorkflowDefinition) -> None:
+        """保存用户的工作流。"""
+        if user_id not in self._user_workflows:
+            self._user_workflows[user_id] = {}
+        self._user_workflows[user_id][wf.id] = wf
+        self.workflows[wf.id] = wf
+
+    def get_user_workflows(self, user_id: str) -> list[WorkflowDefinition]:
+        """获取用户的工作流列表。"""
+        return list(self._user_workflows.get(user_id, {}).values())
 
 
 # 全局应用状态实例
@@ -234,8 +274,11 @@ async def create_agent(
     state: AppState = Depends(get_app_state),
     user: TokenData = Depends(get_current_user),
 ):
-    """创建Agent"""
-    agent = state.create_agent(request.agent_type, request.name, request.system_prompt, request.model)
+    """创建Agent（按 user_id 隔离）"""
+    agent = state.create_agent(
+        request.agent_type, request.name, request.system_prompt, request.model,
+        user_id=user.user_id,
+    )
     return AgentInfo(
         id=agent.id,
         name=agent.name,
@@ -250,7 +293,8 @@ async def list_agents(
     state: AppState = Depends(get_app_state),
     user: TokenData = Depends(optional_auth),
 ):
-    """列出所有Agent"""
+    """列出当前用户的Agent"""
+    agents = state.get_user_agents(user.user_id) if user.user_id != "anonymous" else list(state.agents.values())
     return [
         AgentInfo(
             id=agent.id,
@@ -259,7 +303,7 @@ async def list_agents(
             status=agent.state.status.value,
             token_usage=agent.get_token_usage(),
         )
-        for agent in state.agents.values()
+        for agent in agents
     ]
 
 
@@ -269,7 +313,7 @@ async def get_agent(
     state: AppState = Depends(get_app_state),
     user: TokenData = Depends(optional_auth),
 ):
-    agent = state.agents.get(agent_id)
+    agent = state.get_user_agent(user.user_id, agent_id) if user.user_id != "anonymous" else state.agents.get(agent_id)
     if not agent:
         raise HTTPException(status_code=404, detail="Agent不存在")
     return AgentInfo(
@@ -289,7 +333,7 @@ async def delete_agent(
 ):
     if agent_id not in state.agents:
         raise HTTPException(status_code=404, detail="Agent不存在")
-    del state.agents[agent_id]
+    state.delete_user_agent(user.user_id, agent_id)
     return {"message": "Agent已删除"}
 
 
@@ -355,17 +399,127 @@ async def chat_stream(websocket: WebSocket):
             data = await websocket.receive_json()
             message = data.get("message", "")
             agent_id = data.get("agent_id")
+            strategy = data.get("strategy", "sequential")
+
             if agent_id:
+                # 单 Agent 流式
                 state = get_app_state()
                 agent = state.agents.get(agent_id)
-                if agent:
-                    async for chunk in agent.stream_chat(message):
-                        await websocket.send_json({"type": "chunk", "content": chunk})
-                    await websocket.send_json({"type": "done"})
+                if not agent:
+                    await websocket.send_json({"type": "error", "message": f"Agent不存在: {agent_id}"})
+                    continue
+                try:
+                    async for event in _stream_agent(agent, message):
+                        await websocket.send_json(event)
+                except Exception as exc:
+                    await websocket.send_json({"type": "error", "message": str(exc)})
             else:
-                await websocket.send_json({"type": "error", "content": "请指定agent_id"})
+                # 多 Agent 编排流式
+                state = get_app_state()
+                strategy_map = {
+                    "sequential": OrchestrationStrategy.SEQUENTIAL,
+                    "parallel": OrchestrationStrategy.PARALLEL,
+                    "debate": OrchestrationStrategy.DEBATE,
+                    "supervisor": OrchestrationStrategy.SUPERVISOR,
+                }
+                state.orchestrator.strategy = strategy_map.get(strategy, OrchestrationStrategy.SEQUENTIAL)
+                try:
+                    async for event in _stream_orchestrator(state.orchestrator, message):
+                        await websocket.send_json(event)
+                except Exception as exc:
+                    await websocket.send_json({"type": "error", "message": str(exc)})
     except WebSocketDisconnect:
         pass
+
+
+async def _stream_agent(agent: BaseAgent, message: str):
+    """对单个 Agent 执行带工具调用的流式 ReAct 循环，逐事件 yield。"""
+    import time
+
+    start_time = time.perf_counter()
+    token_usage: dict[str, int] = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+
+    agent.conversation.add_user(message)
+
+    for _ in range(agent.state.max_iterations):
+        agent.state.increment_iteration()
+
+        # 单步推理
+        response = await agent._step()
+        agent._accumulate_usage(token_usage, response)
+        agent._total_tokens += response.total_tokens
+
+        tool_calls_raw = [agent._parse_tool_call(tc) for tc in response.tool_calls]
+        tool_calls = [tc for tc in tool_calls_raw if tc is not None]
+
+        if tool_calls:
+            # 思考过程（模型可能输出文字 + 同时请求工具）
+            if response.content:
+                yield {"type": "thinking", "agent": agent.name, "content": response.content}
+                agent.conversation.add_assistant(response.content)
+
+            # 执行工具调用
+            for tc in tool_calls:
+                yield {"type": "tool_call", "agent": agent.name, "tool": tc.name, "args": tc.arguments}
+                result = await agent._execute_tool(tc)
+                agent.logger.log_agent_action(tc.name, result.content)
+                agent.conversation.add_user(
+                    f"[工具 {tc.name} 的结果]\n{result.content}"
+                )
+                yield {
+                    "type": "tool_result",
+                    "agent": agent.name,
+                    "tool": tc.name,
+                    "result": result.content,
+                }
+            continue
+
+        # 无工具调用 → 最终答案
+        answer = response.content
+        if not answer:
+            answer = await agent._generate_answer()
+        else:
+            agent.conversation.add_assistant(answer)
+
+        duration = (time.perf_counter() - start_time) * 1000
+        yield {"type": "answer", "agent": agent.name, "content": answer, "duration_ms": duration, "done": True}
+        return
+
+    # 达到最大迭代
+    answer = await agent._generate_answer()
+    duration = (time.perf_counter() - start_time) * 1000
+    yield {"type": "answer", "agent": agent.name, "content": answer, "duration_ms": duration, "done": True}
+
+
+async def _stream_orchestrator(orchestrator: AgentOrchestrator, task: str):
+    """流式执行多 Agent 编排，对每个 Agent 逐事件 yield。"""
+    import time
+
+    start_time = time.perf_counter()
+    agents = list(orchestrator.agents.keys())
+    current_input = task
+    final_output = ""
+    got_answer = False
+
+    for agent_id in agents:
+        agent = orchestrator.agents.get(agent_id)
+        if not agent:
+            continue
+
+        yield {"type": "thinking", "agent": agent.name, "content": "开始处理..."}
+        try:
+            async for event in _stream_agent(agent, current_input):
+                yield event
+                if event.get("type") == "answer":
+                    current_input = event.get("content", "")
+                    final_output = current_input
+                    got_answer = True
+        except Exception as exc:
+            yield {"type": "error", "agent": agent.name, "message": str(exc)}
+
+    if not got_answer:
+        duration = (time.perf_counter() - start_time) * 1000
+        yield {"type": "answer", "agent": "orchestrator", "content": final_output, "duration_ms": duration, "done": True}
 
 
 # ============ Workflow API ============

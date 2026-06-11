@@ -115,5 +115,30 @@ def ui(
     ])
 
 
+@app.command()
+def mcp_server(
+    http: bool = typer.Option(False, "--http", help="使用 SSE/HTTP 传输（默认 stdio）"),
+    host: str = typer.Option("0.0.0.0", help="HTTP 模式监听地址"),
+    port: int = typer.Option(8766, help="HTTP 模式监听端口"),
+    name: str = typer.Option("agentflow-tools", help="MCP 服务器名称"),
+):
+    """启动 MCP 工具服务器（让 Claude Code 等外部工具调用 AgentFlow 工具）"""
+    from agentflow.tools.base import create_default_registry
+
+    registry = create_default_registry()
+
+    tool_names = [t.name for t in registry.list_tools()]
+    console.print(f"[bold blue]启动 MCP 服务器[/] '{name}' | 工具: {', '.join(tool_names)}")
+
+    if http:
+        console.print(f"传输: SSE/HTTP | http://{host}:{port}/sse")
+        from agentflow.mcp.server import run_server_sse
+        run_server_sse(registry, name=name, host=host, port=port)
+    else:
+        console.print("传输: stdio | 等待客户端连接...")
+        from agentflow.mcp.server import run_server_stdio
+        run_server_stdio(registry, name=name)
+
+
 if __name__ == "__main__":
     app()
